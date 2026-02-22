@@ -161,6 +161,37 @@ def build_permission_plan(guild: discord.Guild) -> PermissionPlan:
                     source=f"{discord_role.name} → {level_name}",
                 ))
 
+    # ------------------------------------------------------------------
+    # 3. Propagate category @everyone baseline to unsynced channels
+    # ------------------------------------------------------------------
+    # Channels not synced to their parent category don't inherit the
+    # category's @everyone overwrite automatically.  Any such channel
+    # that already has plan entries (from an access rule) needs the
+    # baseline applied explicitly, or @everyone falls back to the
+    # server default rather than the configured level.
+    for chan_id, entries in list(plan.entries.items()):
+        channel = discord_channels_by_id.get(chan_id)
+        if channel is None:
+            continue  # it's a category entry — skip
+        if getattr(channel, "permissions_synced", True):
+            continue  # synced channels inherit from category — nothing to do
+        if channel.category_id is None:
+            continue  # no parent category
+
+        # Skip if @everyone is already explicitly planned for this channel
+        if any(entry.target == everyone for entry in entries):
+            continue
+
+        cat_level = baselines.get(str(channel.category_id))
+        if cat_level is None:
+            continue
+
+        plan.add(chan_id, OverwriteEntry(
+            target=everyone,
+            overwrite=level_to_overwrite(cat_level, guild.id),
+            source=f"@everyone baseline (category) → {cat_level}",
+        ))
+
     return plan
 
 

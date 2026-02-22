@@ -1243,62 +1243,98 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(
         name="status",
-        description="Show a summary of all configured permission settings for this server",
+        description="Show all configured permission settings for this server",
     )
     @app_commands.default_permissions(administrator=True)
     async def status(self, interaction: discord.Interaction):
-        gid = interaction.guild_id
+        await interaction.response.defer(ephemeral=True)
+        gid   = interaction.guild_id
+        guild = interaction.guild
 
         levels    = local_store.get_permission_levels(gid)
         bundles   = local_store.get_bundles(gid)
         groups    = local_store.get_exclusive_groups(gid)
         baselines = local_store.get_category_baselines(gid)
-        rules_data = local_store.get_access_rules_data(gid)
-        rules     = rules_data.get("rules", [])
+        rules     = local_store.get_access_rules_data(gid).get("rules", [])
 
-        embed = discord.Embed(title="Permissions Manager — Status", color=discord.Color.blurple())
-        embed.add_field(name="Permission Levels",    value=str(len(levels)),    inline=True)
-        embed.add_field(name="Role Bundles",         value=str(len(bundles)),   inline=True)
-        embed.add_field(name="Exclusive Groups",     value=str(len(groups)),    inline=True)
-        embed.add_field(name="Category Baselines",   value=str(len(baselines)), inline=True)
-        embed.add_field(name="Access Rules",         value=str(len(rules)),     inline=True)
+        # --- build section lines ---
+        level_text = ", ".join(sorted(levels.keys())) or "*(none)*"
 
-        if baselines:
-            bl_lines = []
-            for cat_id_str, level in baselines.items():
-                cat = interaction.guild.get_channel(int(cat_id_str))
-                name = cat.name if cat else f"(deleted {cat_id_str})"
-                bl_lines.append(f"• {name} → {level}")
-            embed.add_field(
-                name="Category Baselines Detail",
-                value=_truncate_field(bl_lines),
-                inline=False,
+        bundle_lines = []
+        for name, role_strs in bundles.items():
+            display = [_display_role(guild, rs) for rs in role_strs]
+            bundle_lines.append(f"**{name}**: {', '.join(display) if display else '*empty*'}")
+
+        eg_lines = []
+        for name, role_strs in groups.items():
+            display = [_display_role(guild, rs) for rs in role_strs]
+            eg_lines.append(f"**{name}**: {', '.join(display) if display else '*empty*'}")
+
+        bl_lines = []
+        for cat_id_str, level in baselines.items():
+            cat = guild.get_channel(int(cat_id_str))
+            cat_name = cat.name if cat else f"(deleted {cat_id_str})"
+            bl_lines.append(f"• **{cat_name}** → {level}")
+
+        rule_lines = []
+        for rule in rules:
+            role_names = [_display_role(guild, rid_str) for rid_str in rule["role_ids"]]
+            target_names = []
+            for tid_str in rule["target_ids"]:
+                t = guild.get_channel(int(tid_str))
+                target_names.append(t.name if t else f"(deleted {tid_str})")
+            rule_lines.append(
+                f"**#{rule['id']}** {', '.join(role_names)} → "
+                f"{rule['target_type']}({', '.join(target_names)}) "
+                f"[{rule['level']}/{rule.get('overwrite', 'Allow')}]"
             )
 
-        if rules:
-            rule_lines = []
-            for rule in rules:
-                role_names = [_display_role(interaction.guild, rid_str) for rid_str in rule["role_ids"]]
-                target_names = []
-                for tid_str in rule["target_ids"]:
-                    t = interaction.guild.get_channel(int(tid_str))
-                    target_names.append(t.name if t else f"(deleted {tid_str})")
-                rule_lines.append(
-                    f"#{rule['id']} {', '.join(role_names)} → "
-                    f"{rule['target_type']}({', '.join(target_names)}) "
-                    f"[{rule['level']}/{rule.get('overwrite','Allow')}]"
-                )
-            embed.add_field(
-                name="Access Rules Detail",
-                value=_truncate_field(rule_lines),
-                inline=False,
-            )
+        # --- helper: split lines into ≤1024-char field chunks ---
+        def _fields_for(title: str, lines: list[str]) -> list[tuple[str, str]]:
+            if not lines:
+                return [(title, "*(none)*")]
+            out: list[tuple[str, str]] = []
+            chunk: list[str] = []
+            chars = 0
+            first = True
+            for line in lines:
+                if chars + len(line) + 1 > 1024 and chunk:
+                    out.append((title if first else f"{title} (cont.)", "\n".join(chunk)))
+                    first = False
+                    chunk = []
+                    chars = 0
+                chunk.append(line)
+                chars += len(line) + 1
+            if chunk:
+                out.append((title if first else f"{title} (cont.)", "\n".join(chunk)))
+            return out
 
-        embed.set_footer(text=(
-            "Use /level list • /bundle list • /exclusive-group list • "
-            "/category baseline-list • /access-rule list for full details"
-        ))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        all_fields: list[tuple[str, str]] = [
+            (f"Permission Levels ({len(levels)})", level_text),
+            *_fields_for(f"Role Bundles ({len(bundles)})", bundle_lines),
+            *_fields_for(f"Exclusive Groups ({len(groups)})", eg_lines),
+            *_fields_for(f"Category Baselines ({len(baselines)})", bl_lines),
+            *_fields_for(f"Access Rules ({len(rules)})", rule_lines),
+        ]
+
+        # --- pack fields into embeds (≤6000 chars each) ---
+        embeds: list[discord.Embed] = []
+        current = discord.Embed(
+            title="Permissions Manager — Status", color=discord.Color.blurple()
+        )
+        current_size = len(current.title)
+
+        for field_name, field_value in all_fields:
+            chunk_size = len(field_name) + len(field_value)
+            if current_size + chunk_size > 5900 and len(current.fields) > 0:
+                embeds.append(current)
+                current = discord.Embed(color=discord.Color.blurple())
+                current_size = 0
+            current.add_field(name=field_name, value=field_value, inline=False)
+            current_size += chunk_size
+
+        embeds.append(current)
+        await interaction.followup.send(embeds=embeds[:10], ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

@@ -124,32 +124,33 @@ def _level_sort_key(name: str) -> tuple[int, str]:
     return (_LEVEL_ORDER.get(name, len(_LEVEL_ORDER)), name.lower())
 
 
-def _fields_for(title: str, lines: list[str], hint: str = "") -> list[tuple[str, str]]:
-    """Split a list of lines into ≤1024-char embed field (title, value) tuples.
+def _desc_sections(title: str, lines: list[str], hint: str = "") -> list[str]:
+    """Return one or more description-block strings for a status section.
 
-    The hint (if given) is appended as a small italic line to the last chunk only.
+    Each block starts with a '## __Title__' heading (renders at heading size in
+    Discord embed descriptions).  If content exceeds MAX_CONTENT chars the section
+    is split into continuation blocks labelled '## __Title (cont.)__'.
+    The hint (italic) is appended only to the last block.
     """
-    hint_line = f"\n*{hint}*" if hint else ""
+    hint_text = f"\n*{hint}*" if hint else ""
     if not lines:
-        return [(title, f"*(none)*{hint_line}")]
-    out: list[tuple[str, str]] = []
+        return [f"## __{title}__\n*(none)*{hint_text}"]
+    MAX_CONTENT = 3500  # leaves headroom inside Discord's 4096-char description limit
+    blocks: list[str] = []
     chunk: list[str] = []
     chars = 0
     first = True
     for line in lines:
-        if chars + len(line) + 1 > 1024 and chunk:
-            out.append((title if first else f"{title} (cont.)", "\n".join(chunk)))
-            first = False
-            chunk = []
-            chars = 0
+        if chars + len(line) + 1 > MAX_CONTENT and chunk:
+            t = title if first else f"{title} (cont.)"
+            blocks.append(f"## __{t}__\n" + "\n".join(chunk))
+            first, chunk, chars = False, [], 0
         chunk.append(line)
         chars += len(line) + 1
     if chunk:
-        body = "\n".join(chunk)
-        if hint and len(body) + len(hint_line) <= 1024:
-            body += hint_line
-        out.append((title if first else f"{title} (cont.)", body))
-    return out
+        t = title if first else f"{title} (cont.)"
+        blocks.append(f"## __{t}__\n" + "\n".join(chunk) + hint_text)
+    return blocks
 
 
 def _build_bundle_embed(bundle_name: str, guild_id: int, guild: discord.Guild | None = None) -> discord.Embed:
@@ -1347,7 +1348,6 @@ class AdminCog(commands.Cog):
         # --- Permission Levels: hierarchy order, one bullet per line ---
         sorted_level_names = sorted(levels.keys(), key=_level_sort_key)
         level_lines = [f"• {name}" for name in sorted_level_names]
-        level_text  = "\n".join(level_lines) if level_lines else "*(none)*"
 
         # --- Role Bundles ---
         bundle_lines = []
@@ -1418,53 +1418,60 @@ class AdminCog(commands.Cog):
 
         _AR_HINT = "/access-rule add-category • /access-rule add-channel • /access-rule edit • /access-rule remove • /access-rule prune • /sync-permissions"
 
-        all_fields: list[tuple[str, str]] = [
-            (
-                f"Permission Levels ({len(levels)})",
-                level_text + "\n*/level view • /level create • /level edit • /level delete • /level reset-defaults*",
+        all_blocks: list[str] = [
+            *_desc_sections(
+                f"Permission Levels ({len(levels)})", level_lines,
+                hint="/level view • /level create • /level edit • /level delete • /level reset-defaults",
             ),
-            *_fields_for(
+            *_desc_sections(
                 f"Role Bundles ({len(bundles)})", bundle_lines,
                 hint="/bundle view • /bundle create • /bundle add-role • /bundle remove-role • /bundle delete • /assign • /remove",
             ),
-            *_fields_for(
+            *_desc_sections(
                 f"Exclusive Groups ({len(groups)})", eg_lines,
                 hint="/exclusive-group create • /exclusive-group add-role • /exclusive-group remove-role • /exclusive-group delete",
             ),
-            *_fields_for(
+            *_desc_sections(
                 f"Category Baselines ({len(baselines)})", bl_lines,
                 hint="/category baseline-set • /category baseline-clear",
             ),
-            # Access rules: separate fields for category and channel targets.
-            # Hint goes on the last field only.
-            *_fields_for(
+            # Access rules: separate blocks for category and channel targets.
+            # Hint goes on the last block only.
+            *_desc_sections(
                 f"Category Rules ({n_cat_rules} rules / {n_cat_targets} targets)",
                 cat_rule_lines,
             ),
-            *_fields_for(
+            *_desc_sections(
                 f"Channel Rules ({n_ch_rules} rules / {n_ch_targets} targets)",
                 ch_rule_lines,
                 hint=_AR_HINT,
             ),
         ]
 
-        # --- pack fields into embeds (≤6000 chars each) ---
+        # --- pack blocks into embeds (≤4000 chars per description) ---
+        _DESC_MAX = 4000
         embeds: list[discord.Embed] = []
-        current = discord.Embed(
-            title="Permissions Manager — Status", color=discord.Color.blurple()
-        )
-        current_size = len(current.title)
+        parts: list[str] = []
+        size = 0
 
-        for field_name, field_value in all_fields:
-            chunk_size = len(field_name) + len(field_value)
-            if current_size + chunk_size > 5900 and len(current.fields) > 0:
-                embeds.append(current)
-                current = discord.Embed(color=discord.Color.blurple())
-                current_size = 0
-            current.add_field(name=field_name, value=field_value, inline=False)
-            current_size += chunk_size
+        for block in all_blocks:
+            block_size = len(block) + 2  # +2 for the \n\n separator
+            if size + block_size > _DESC_MAX and parts:
+                e = discord.Embed(color=discord.Color.blurple())
+                e.description = "\n\n".join(parts)
+                embeds.append(e)
+                parts, size = [], 0
+            parts.append(block)
+            size += block_size
 
-        embeds.append(current)
+        if parts:
+            e = discord.Embed(color=discord.Color.blurple())
+            e.description = "\n\n".join(parts)
+            embeds.append(e)
+
+        if embeds:
+            embeds[0].title = "Permissions Manager — Status"
+
         await interaction.followup.send(embeds=embeds[:10], ephemeral=True)
 
 

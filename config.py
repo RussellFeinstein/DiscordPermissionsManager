@@ -1,43 +1,4 @@
 # ---------------------------------------------------------------------------
-# Airtable table names
-# ---------------------------------------------------------------------------
-TABLES = {
-    "roles": "Roles",
-    "categories": "Categories",
-    "channels": "Channels",
-    "access_rules": "Access Rules",
-}
-
-
-# ---------------------------------------------------------------------------
-# Field name constants — change these if your Airtable column names differ
-# ---------------------------------------------------------------------------
-class RoleFields:
-    NAME = "Role Name"
-    DISCORD_ID = "Discord ID"
-
-
-class CategoryFields:
-    NAME = "Category Name"
-    DISCORD_ID = "Discord ID"
-    BASELINE = "Baseline Permission"   # single-select → permission level name
-
-
-class ChannelFields:
-    NAME = "Channel Name"
-    DISCORD_ID = "Discord ID"
-
-
-class AccessRuleFields:
-    ROLES = "Roles"                        # linked → Roles
-    CHANNEL_OR_CATEGORY = "Channel/Category"   # "Category" or "Channel"
-    CATEGORIES = "Channel Categories"      # linked → Categories
-    CHANNELS = "Channels"                  # linked → Channels
-    PERMISSION_LEVEL = "Permission Level"  # single-select → permission level name
-    OVERWRITE = "Overwrite"                # "Allow" or "Deny"
-
-
-# ---------------------------------------------------------------------------
 # Permission level defaults — these are the factory definitions.
 # Edits made via /level commands are persisted to data/permission_levels.json
 # and take precedence over these defaults.

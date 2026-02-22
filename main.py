@@ -6,10 +6,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Preflight — only DISCORD_BOT_TOKEN is required to start the bot.
-# Airtable and per-guild config are set by server admins via /setup airtable.
-# ---------------------------------------------------------------------------
 _token = os.environ.get("DISCORD_BOT_TOKEN")
 if not _token:
     print("ERROR: DISCORD_BOT_TOKEN is not set.")
@@ -26,7 +22,6 @@ class Bot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
 
     async def setup_hook(self):
-        await self.load_extension("cogs.setup")
         await self.load_extension("cogs.permissions")
         await self.load_extension("cogs.roles")
         await self.load_extension("cogs.admin")
@@ -75,15 +70,17 @@ class Bot(commands.Bot):
         embed = discord.Embed(
             title="Thanks for adding Permissions Manager!",
             description=(
-                "Here's how to get started:\n\n"
-                "**Bundles & permission levels** work right away — no setup needed:\n"
+                "Everything is managed through Discord slash commands — no external setup needed.\n\n"
+                "**Role management** (works right away):\n"
                 "• `/bundle create` — create a role bundle\n"
                 "• `/assign @member <bundle>` — assign a bundle to a member\n"
-                "• `/level edit` — customise permission levels\n\n"
-                "**Permission sync** requires an Airtable base:\n"
-                "• `/setup airtable` — connect your Airtable base\n"
-                "• `/sync-permissions` — apply permissions from Airtable\n\n"
-                "Run `/setup status` at any time to check your configuration."
+                "• `/exclusive-group create` — create a mutually-exclusive role group\n\n"
+                "**Permission sync**:\n"
+                "• `/category baseline-set` — set the @everyone permission per category\n"
+                "• `/access-rule add-category` — grant a role access to a category\n"
+                "• `/access-rule add-channel` — grant a role access to a specific channel\n"
+                "• `/sync-permissions` — apply all rules to Discord\n\n"
+                "Run `/status` at any time to see your current configuration."
             ),
             color=discord.Color.blurple(),
         )

@@ -1,5 +1,6 @@
 """
-admin.py — interactive management of permission levels, role bundles, and exclusive groups.
+admin.py — interactive management of permission levels, role bundles,
+           exclusive groups, category baselines, and access rules.
 
 Permission level commands  (/level ...)
   /level list              — list all levels
@@ -24,6 +25,20 @@ Exclusive group commands  (/exclusive-group ...)
   /exclusive-group delete <name>              — delete a group
   /exclusive-group add-role <group> <role>    — add a role to a group
   /exclusive-group remove-role <group> <role> — remove a role from a group
+
+Category baseline commands  (/category ...)
+  /category baseline-list                      — list @everyone baselines per category
+  /category baseline-set <category> <level>    — set @everyone baseline for a category
+  /category baseline-clear <category>          — remove baseline from a category
+
+Access rule commands  (/access-rule ...)
+  /access-rule list                                     — list all rules
+  /access-rule add-category <role> <category> <level>   — rule targeting a category
+  /access-rule add-channel  <role> <channel>  <level>   — rule targeting a channel
+  /access-rule remove <id>                              — delete a rule by its ID
+
+Status  (/status)
+  /status — show counts of all configured items
 """
 
 import discord
@@ -668,6 +683,314 @@ class AdminCog(commands.Cog):
             for r in roles
             if current.lower() in r.lower()
         ][:25]
+
+
+    # ==================================================================
+    # /category group
+    # ==================================================================
+
+    category = app_commands.Group(
+        name="category",
+        description="Manage per-category @everyone baseline permissions",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    @category.command(name="baseline-list", description="List all category baseline permissions")
+    async def cat_baseline_list(self, interaction: discord.Interaction):
+        baselines = local_store.get_category_baselines(interaction.guild_id)
+        if not baselines:
+            await interaction.response.send_message(
+                "No category baselines set. Use `/category baseline-set` to configure one.",
+                ephemeral=True,
+            )
+            return
+        lines = []
+        for cat_id_str, level in baselines.items():
+            cat = interaction.guild.get_channel(int(cat_id_str))
+            name = cat.name if cat else f"(deleted, ID {cat_id_str})"
+            lines.append(f"• **{name}** → {level}")
+        embed = discord.Embed(
+            title="Category Baselines (@everyone)",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @category.command(
+        name="baseline-set",
+        description="Set the @everyone baseline permission for a category",
+    )
+    @app_commands.describe(
+        category="The category to configure",
+        level="Permission level to apply to @everyone",
+    )
+    async def cat_baseline_set(
+        self,
+        interaction: discord.Interaction,
+        category: discord.CategoryChannel,
+        level: str,
+    ):
+        levels = local_store.get_permission_levels(interaction.guild_id)
+        if level not in levels:
+            names = ", ".join(sorted(levels.keys()))
+            await interaction.response.send_message(
+                f"Level **{level}** not found. Available: {names}", ephemeral=True
+            )
+            return
+        local_store.set_category_baseline(interaction.guild_id, str(category.id), level)
+        await interaction.response.send_message(
+            f"Set **{category.name}** baseline → **{level}** for @everyone.",
+            ephemeral=True,
+        )
+
+    @category.command(
+        name="baseline-clear",
+        description="Remove the @everyone baseline from a category",
+    )
+    @app_commands.describe(category="The category to clear")
+    async def cat_baseline_clear(
+        self,
+        interaction: discord.Interaction,
+        category: discord.CategoryChannel,
+    ):
+        local_store.clear_category_baseline(interaction.guild_id, str(category.id))
+        await interaction.response.send_message(
+            f"Cleared baseline for **{category.name}**.",
+            ephemeral=True,
+        )
+
+    @cat_baseline_set.autocomplete("level")
+    async def cat_level_ac(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._level_name_autocomplete(interaction, current)
+
+    # ==================================================================
+    # /access-rule group
+    # ==================================================================
+
+    access_rule = app_commands.Group(
+        name="access-rule",
+        description="Manage role-based channel/category access rules",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    @access_rule.command(name="list", description="List all access rules")
+    async def ar_list(self, interaction: discord.Interaction):
+        data = local_store.get_access_rules_data(interaction.guild_id)
+        rules = data.get("rules", [])
+        if not rules:
+            await interaction.response.send_message(
+                "No access rules defined. Use `/access-rule add-category` or `/access-rule add-channel`.",
+                ephemeral=True,
+            )
+            return
+        lines = []
+        for rule in rules:
+            role_names = []
+            for rid_str in rule["role_ids"]:
+                r = interaction.guild.get_role(int(rid_str))
+                role_names.append(r.name if r else f"(deleted {rid_str})")
+            target_names = []
+            for tid_str in rule["target_ids"]:
+                t = interaction.guild.get_channel(int(tid_str))
+                target_names.append(t.name if t else f"(deleted {tid_str})")
+            target_type = rule["target_type"].title()
+            overwrite = rule.get("overwrite", "Allow")
+            lines.append(
+                f"**#{rule['id']}** {', '.join(role_names)} → "
+                f"{target_type}({', '.join(target_names)}) "
+                f"[{rule['level']} / {overwrite}]"
+            )
+        embed = discord.Embed(
+            title="Access Rules",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Use /access-rule remove <id> to delete a rule")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @access_rule.command(
+        name="add-category",
+        description="Grant a role a permission level for an entire category",
+    )
+    @app_commands.describe(
+        role="The role to grant access",
+        category="The category to apply the permission to",
+        level="Permission level to grant",
+        overwrite="Allow or Deny (default: Allow)",
+    )
+    @app_commands.choices(overwrite=[
+        app_commands.Choice(name="Allow", value="Allow"),
+        app_commands.Choice(name="Deny",  value="Deny"),
+    ])
+    async def ar_add_category(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        category: discord.CategoryChannel,
+        level: str,
+        overwrite: str = "Allow",
+    ):
+        levels = local_store.get_permission_levels(interaction.guild_id)
+        if level not in levels:
+            names = ", ".join(sorted(levels.keys()))
+            await interaction.response.send_message(
+                f"Level **{level}** not found. Available: {names}", ephemeral=True
+            )
+            return
+        rule_id = local_store.add_access_rule(
+            interaction.guild_id,
+            role_ids=[str(role.id)],
+            target_type="category",
+            target_ids=[str(category.id)],
+            level=level,
+            overwrite=overwrite,
+        )
+        await interaction.response.send_message(
+            f"Rule **#{rule_id}** added: **{role.name}** → **{category.name}** [{level} / {overwrite}]",
+            ephemeral=True,
+        )
+
+    @access_rule.command(
+        name="add-channel",
+        description="Grant a role a permission level for a specific channel",
+    )
+    @app_commands.describe(
+        role="The role to grant access",
+        channel="The channel to apply the permission to",
+        level="Permission level to grant",
+        overwrite="Allow or Deny (default: Allow)",
+    )
+    @app_commands.choices(overwrite=[
+        app_commands.Choice(name="Allow", value="Allow"),
+        app_commands.Choice(name="Deny",  value="Deny"),
+    ])
+    async def ar_add_channel(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        channel: discord.abc.GuildChannel,
+        level: str,
+        overwrite: str = "Allow",
+    ):
+        if isinstance(channel, discord.CategoryChannel):
+            await interaction.response.send_message(
+                "That's a category — use `/access-rule add-category` instead.",
+                ephemeral=True,
+            )
+            return
+        levels = local_store.get_permission_levels(interaction.guild_id)
+        if level not in levels:
+            names = ", ".join(sorted(levels.keys()))
+            await interaction.response.send_message(
+                f"Level **{level}** not found. Available: {names}", ephemeral=True
+            )
+            return
+        rule_id = local_store.add_access_rule(
+            interaction.guild_id,
+            role_ids=[str(role.id)],
+            target_type="channel",
+            target_ids=[str(channel.id)],
+            level=level,
+            overwrite=overwrite,
+        )
+        await interaction.response.send_message(
+            f"Rule **#{rule_id}** added: **{role.name}** → **#{channel.name}** [{level} / {overwrite}]",
+            ephemeral=True,
+        )
+
+    @access_rule.command(
+        name="remove",
+        description="Remove an access rule by its ID number",
+    )
+    @app_commands.describe(rule_id="The ID number shown in /access-rule list")
+    async def ar_remove(self, interaction: discord.Interaction, rule_id: int):
+        try:
+            local_store.remove_access_rule(interaction.guild_id, rule_id)
+        except KeyError:
+            await interaction.response.send_message(
+                f"Access rule **#{rule_id}** not found.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            f"Deleted access rule **#{rule_id}**.", ephemeral=True
+        )
+
+    @ar_add_category.autocomplete("level")
+    @ar_add_channel.autocomplete("level")
+    async def ar_level_ac(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._level_name_autocomplete(interaction, current)
+
+    # ==================================================================
+    # /status
+    # ==================================================================
+
+    @app_commands.command(
+        name="status",
+        description="Show a summary of all configured permission settings for this server",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def status(self, interaction: discord.Interaction):
+        gid = interaction.guild_id
+
+        levels    = local_store.get_permission_levels(gid)
+        bundles   = local_store.get_bundles(gid)
+        groups    = local_store.get_exclusive_groups(gid)
+        baselines = local_store.get_category_baselines(gid)
+        rules_data = local_store.get_access_rules_data(gid)
+        rules     = rules_data.get("rules", [])
+
+        embed = discord.Embed(title="Permissions Manager — Status", color=discord.Color.blurple())
+        embed.add_field(name="Permission Levels",    value=str(len(levels)),    inline=True)
+        embed.add_field(name="Role Bundles",         value=str(len(bundles)),   inline=True)
+        embed.add_field(name="Exclusive Groups",     value=str(len(groups)),    inline=True)
+        embed.add_field(name="Category Baselines",   value=str(len(baselines)), inline=True)
+        embed.add_field(name="Access Rules",         value=str(len(rules)),     inline=True)
+
+        if baselines:
+            bl_lines = []
+            for cat_id_str, level in baselines.items():
+                cat = interaction.guild.get_channel(int(cat_id_str))
+                name = cat.name if cat else f"(deleted {cat_id_str})"
+                bl_lines.append(f"• {name} → {level}")
+            embed.add_field(
+                name="Category Baselines Detail",
+                value="\n".join(bl_lines),
+                inline=False,
+            )
+
+        if rules:
+            rule_lines = []
+            for rule in rules[:10]:  # cap to avoid embed overflow
+                role_names = []
+                for rid_str in rule["role_ids"]:
+                    r = interaction.guild.get_role(int(rid_str))
+                    role_names.append(r.name if r else f"(deleted {rid_str})")
+                target_names = []
+                for tid_str in rule["target_ids"]:
+                    t = interaction.guild.get_channel(int(tid_str))
+                    target_names.append(t.name if t else f"(deleted {tid_str})")
+                rule_lines.append(
+                    f"#{rule['id']} {', '.join(role_names)} → "
+                    f"{rule['target_type']}({', '.join(target_names)}) "
+                    f"[{rule['level']}/{rule.get('overwrite','Allow')}]"
+                )
+            if len(rules) > 10:
+                rule_lines.append(f"… and {len(rules) - 10} more")
+            embed.add_field(
+                name="Access Rules Detail",
+                value="\n".join(rule_lines),
+                inline=False,
+            )
+
+        embed.set_footer(text=(
+            "Use /level list • /bundle list • /exclusive-group list • "
+            "/category baseline-list • /access-rule list for full details"
+        ))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

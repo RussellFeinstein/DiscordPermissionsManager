@@ -217,3 +217,74 @@ def remove_role_from_exclusive_group(guild_id: int, group_name: str, role_name: 
             raise KeyError(f"Exclusive group '{group_name}' not found")
         groups[group_name] = [r for r in groups[group_name] if r != role_name]
         _save(_guild_dir(guild_id) / "exclusive_groups.json", groups)
+
+
+# ---------------------------------------------------------------------------
+# Category baseline permissions
+# ---------------------------------------------------------------------------
+
+def get_category_baselines(guild_id: int) -> dict[str, str]:
+    """Returns {category_discord_id: level_name}."""
+    return _load(_guild_dir(guild_id) / "category_baselines.json", {})
+
+
+def set_category_baseline(guild_id: int, category_id: str, level_name: str) -> None:
+    with _get_lock(guild_id):
+        baselines = get_category_baselines(guild_id)
+        baselines[category_id] = level_name
+        _save(_guild_dir(guild_id) / "category_baselines.json", baselines)
+
+
+def clear_category_baseline(guild_id: int, category_id: str) -> None:
+    with _get_lock(guild_id):
+        baselines = get_category_baselines(guild_id)
+        baselines.pop(category_id, None)
+        _save(_guild_dir(guild_id) / "category_baselines.json", baselines)
+
+
+# ---------------------------------------------------------------------------
+# Access rules
+# ---------------------------------------------------------------------------
+
+def get_access_rules_data(guild_id: int) -> dict:
+    """
+    Returns {"next_id": int, "rules": [...]}.
+    Each rule: {"id": int, "role_ids": [str], "target_type": "category"|"channel",
+                "target_ids": [str], "level": str, "overwrite": "Allow"|"Deny"}.
+    """
+    return _load(_guild_dir(guild_id) / "access_rules.json", {"next_id": 1, "rules": []})
+
+
+def add_access_rule(
+    guild_id: int,
+    role_ids: list[str],
+    target_type: str,
+    target_ids: list[str],
+    level: str,
+    overwrite: str = "Allow",
+) -> int:
+    """Add an access rule. Returns the new rule's integer ID."""
+    with _get_lock(guild_id):
+        data = get_access_rules_data(guild_id)
+        rule_id = data["next_id"]
+        data["rules"].append({
+            "id": rule_id,
+            "role_ids": role_ids,
+            "target_type": target_type,
+            "target_ids": target_ids,
+            "level": level,
+            "overwrite": overwrite,
+        })
+        data["next_id"] = rule_id + 1
+        _save(_guild_dir(guild_id) / "access_rules.json", data)
+        return rule_id
+
+
+def remove_access_rule(guild_id: int, rule_id: int) -> None:
+    with _get_lock(guild_id):
+        data = get_access_rules_data(guild_id)
+        before = len(data["rules"])
+        data["rules"] = [r for r in data["rules"] if r["id"] != rule_id]
+        if len(data["rules"]) == before:
+            raise KeyError(f"Access rule #{rule_id} not found")
+        _save(_guild_dir(guild_id) / "access_rules.json", data)

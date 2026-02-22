@@ -2,18 +2,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.airtable_client import get_airtable
 from services.sync import build_permission_plan, apply_permission_plan, diff_permission_plan
 
 # Max characters Discord allows in a single message
 _DISCORD_MAX = 2000
 # Characters reserved for code block wrappers
 _CODE_BLOCK_OVERHEAD = 8  # ```\n...\n```
-
-_NOT_CONFIGURED = (
-    "Airtable is not configured for this server.\n"
-    "An admin can run `/setup airtable` to connect an Airtable base."
-)
 
 
 def _chunk_lines(lines: list[str], max_len: int = _DISCORD_MAX - _CODE_BLOCK_OVERHEAD) -> list[str]:
@@ -48,11 +42,7 @@ class PermissionsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild = interaction.guild
-        try:
-            plan = build_permission_plan(guild)
-        except RuntimeError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
-            return
+        plan = build_permission_plan(guild)
 
         lines = diff_permission_plan(plan, guild)
 
@@ -75,7 +65,7 @@ class PermissionsCog(commands.Cog):
     # ------------------------------------------------------------------
     @app_commands.command(
         name="sync-permissions",
-        description="Read Airtable and apply all permission levels to Discord.",
+        description="Apply all configured permission levels and access rules to Discord.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
@@ -83,14 +73,7 @@ class PermissionsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild = interaction.guild
-
-        # Bust the cache so we always work from fresh Airtable data
-        try:
-            get_airtable(guild.id).refresh()
-            plan = build_permission_plan(guild)
-        except RuntimeError as e:
-            await interaction.followup.send(str(e), ephemeral=True)
-            return
+        plan = build_permission_plan(guild)
 
         total = sum(len(v) for v in plan.entries.values())
         if total == 0:
@@ -105,19 +88,9 @@ class PermissionsCog(commands.Cog):
 
         applied, removed, errors = await apply_permission_plan(plan, guild)
 
-        # Flush any name-drift corrections and Discord ID backfills queued during planning.
-        drift_count = 0
-        if plan.airtable_updates:
-            try:
-                drift_count = get_airtable(guild.id).flush_updates(plan.airtable_updates)
-            except Exception as e:
-                print(f"[sync] Failed to flush Airtable updates: {e}")
-
         result = f"Done — **{applied}** applied"
         if removed:
             result += f", **{removed}** stale overwrite(s) removed"
-        if drift_count:
-            result += f", **{drift_count}** Airtable name(s) refreshed"
         result += "."
         if errors:
             result += f"  ⚠️ {errors} error(s) — check bot logs."

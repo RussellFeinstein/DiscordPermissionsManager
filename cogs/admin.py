@@ -1289,11 +1289,11 @@ class AdminCog(commands.Cog):
         all_fields: list[tuple[str, str]] = [
             (
                 f"Permission Levels ({len(levels)})",
-                level_text + "\n*/level create • /level edit • /level delete • /level reset-defaults*",
+                level_text + "\n*/level view • /level create • /level edit • /level delete • /level reset-defaults*",
             ),
             *_fields_for(
                 f"Role Bundles ({len(bundles)})", bundle_lines,
-                hint="/bundle create • /bundle add-role • /bundle remove-role • /bundle delete • /assign • /remove",
+                hint="/bundle view • /bundle create • /bundle add-role • /bundle remove-role • /bundle delete • /assign • /remove",
             ),
             *_fields_for(
                 f"Exclusive Groups ({len(groups)})", eg_lines,

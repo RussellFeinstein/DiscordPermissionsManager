@@ -980,6 +980,12 @@ class AdminCog(commands.Cog):
             ephemeral=True,
         )
 
+    @ar_add_category.autocomplete("level")
+    async def ar_add_category_level_ac(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._level_name_autocomplete(interaction, current)
+
     @access_rule.command(
         name="add-channel",
         description="Set a role's permission level for one or more specific channels",
@@ -1039,6 +1045,12 @@ class AdminCog(commands.Cog):
             + "\n".join(added),
             ephemeral=True,
         )
+
+    @ar_add_channel.autocomplete("level")
+    async def ar_add_channel_level_ac(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._level_name_autocomplete(interaction, current)
 
     @access_rule.command(
         name="remove",
@@ -1201,13 +1213,6 @@ class AdminCog(commands.Cog):
             f"Pruned **{total}** stale reference(s):\n" + "\n".join(lines),
             ephemeral=True,
         )
-
-    @ar_add_category.autocomplete("level")
-    @ar_add_channel.autocomplete("level")
-    async def ar_level_ac(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        return await self._level_name_autocomplete(interaction, current)
 
     # ==================================================================
     # /status

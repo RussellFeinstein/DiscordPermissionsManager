@@ -1,15 +1,15 @@
 # Discord Permissions Manager
 
-A Discord bot for managing server permissions and role assignments at scale. Everything is configured through Discord slash commands — no external database or setup wizard required.
+A Discord bot for managing server permissions and role assignments at scale, configured entirely through slash commands.
 
 ## What it does
 
-- **Permission sync** — define permission levels and access rules inside Discord, then apply them to every category and channel in one command
+- **Permission sync** — define permission levels and access rules, then apply them to every category and channel in one command
 - **Role bundles** — assign or remove a named group of roles from multiple members at once, with automatic exclusive-group conflict resolution (e.g. promoting Trial → Member auto-removes Trial)
-- **Permission levels** — named access tiers (None / View / Chat / Mod / Admin) that are edited interactively inside Discord, no code changes needed
+- **Permission levels** — named access tiers (None / View / Chat / Mod / Admin) configurable through interactive Discord commands
 - **Access rules** — grant or deny a role a permission level for a specific category or channel
 
-All configuration is stored as JSON files in a persistent volume. No Airtable, no external services.
+Configuration is stored as JSON files on a persistent volume.
 
 ---
 

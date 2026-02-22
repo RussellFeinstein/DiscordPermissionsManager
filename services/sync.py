@@ -242,14 +242,29 @@ async def _set_with_backoff(
 # Apply plan
 # ---------------------------------------------------------------------------
 
+def _is_managed(channel: discord.abc.GuildChannel) -> bool:
+    """
+    Return True if this channel/category is fully managed by the plan.
+    Non-category channels that are synced to their parent category are
+    skipped — Discord propagates the category's overwrites automatically.
+    """
+    if isinstance(channel, discord.CategoryChannel):
+        return True
+    return not getattr(channel, "permissions_synced", True)
+
+
 async def apply_permission_plan(
     plan: PermissionPlan,
     guild: discord.Guild,
 ) -> tuple[int, int, int]:
     """
-    For every channel/category in the plan:
-      - Remove overwrites that exist in Discord but are NOT in the plan (stale).
-      - Apply every overwrite that IS in the plan.
+    For every managed channel/category in the guild:
+      - If it has plan entries: remove stale overwrites, apply planned ones.
+      - If it has NO plan entries: remove all existing overwrites so nothing
+        outside the bot's configuration lingers.
+
+    Channels that are synced to their parent category are left alone —
+    Discord handles them automatically when the category is updated.
 
     Returns (applied_count, removed_count, error_count).
     """
@@ -260,6 +275,7 @@ async def apply_permission_plan(
     removed = 0
     errors = 0
 
+    # --- Channels/categories that ARE in the plan ---
     for target_id, entries in plan.entries.items():
         channel = channels_by_id.get(target_id)
         if not channel:
@@ -285,6 +301,24 @@ async def apply_permission_plan(
             else:
                 errors += 1
 
+    # --- Channels/categories NOT in the plan ---
+    # Strip all their overwrites so leftover manual permissions don't muddy
+    # the bot's configuration.  Synced channels are skipped — they inherit
+    # from their parent category and don't need independent cleanup.
+    for channel in guild.channels:
+        if channel.id in plan.entries:
+            continue  # already handled above
+        if not _is_managed(channel):
+            continue  # synced channel — leave it alone
+
+        for existing_target in list(channel.overwrites):
+            ok = await _set_with_backoff(channel, existing_target, None)
+            if ok:
+                removed += 1
+                print(f"[sync] Removed unmanaged overwrite: #{channel.name} / {existing_target.name}")
+            else:
+                errors += 1
+
     return applied, removed, errors
 
 
@@ -299,15 +333,17 @@ def diff_permission_plan(
     """
     Compare the plan against current Discord state.
     Returns human-readable change lines:
-      "📝 #phoenix-raid-chat  |  Phoenix Raid Team  →  Chat (Allow)"
+      "📝 #phoenix-raid-chat  |  Phoenix Raid Team  →  Chat"
       "✅ #general            |  @everyone           →  Chat (no change)"
       "🗑️  #general            |  OldRole             →  (removed — not in plan)"
+      "🗑️  #old-channel        |  SomeRole            →  (removed — channel unmanaged)"
     """
     channels_by_id: dict[int, discord.abc.GuildChannel] = {
         c.id: c for c in guild.channels
     }
     lines: list[str] = []
 
+    # --- Channels/categories in the plan ---
     for target_id, entries in plan.entries.items():
         channel = channels_by_id.get(target_id)
         if not channel:
@@ -330,6 +366,19 @@ def diff_permission_plan(
             status = "✅" if current == entry.overwrite else "📝"
             lines.append(
                 f"{status}  #{channel.name}  |  {entry.target.name}  →  {entry.source}"
+            )
+
+    # --- Channels/categories NOT in the plan ---
+    # Show any overwrites that will be stripped during apply.
+    for channel in guild.channels:
+        if channel.id in plan.entries:
+            continue
+        if not _is_managed(channel):
+            continue  # synced — inherits from category, won't be touched
+
+        for existing_target in channel.overwrites:
+            lines.append(
+                f"🗑️  #{channel.name}  |  {existing_target.name}  →  (removed — channel unmanaged)"
             )
 
     return lines

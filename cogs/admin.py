@@ -91,7 +91,7 @@ def _build_level_embed(
         for attr in group_perms:
             val = perms.get(attr)
             display_name = attr.replace("_", " ").title()
-            lines.append(f"{_VAL_EMOJI[val]} {display_name}")
+            lines.append(f"{_VAL_EMOJI[val]} {display_name} ({_VAL_LABEL[val]})")
 
         # Split into two columns so the embed isn't too tall
         mid = (len(lines) + 1) // 2
@@ -99,8 +99,6 @@ def _build_level_embed(
         embed.add_field(name=label, value="\n".join(lines[:mid]), inline=True)
         embed.add_field(name="\u200b",                value="\n".join(lines[mid:]) or "\u200b", inline=True)
         embed.add_field(name="\u200b",                value="\u200b", inline=False)   # row break
-
-    embed.set_footer(text="✅ Allow  ❌ Deny  ⬜ Neutral (inherit)")
     return embed
 
 

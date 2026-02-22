@@ -1381,18 +1381,40 @@ class AdminCog(commands.Cog):
             ch = guild.get_channel(int(tid_str))
             return ch.name if ch else f"deleted:{tid_str}"
 
+        def _rule_sort_key(rule: dict) -> tuple:
+            """Sort within a target: @everyone first, then alpha by primary role, then level, then ID."""
+            role_names = [_display_role(guild, rid) for rid in rule["role_ids"]]
+            primary = role_names[0] if role_names else ""
+            return (
+                0 if primary == "@everyone" else 1,
+                primary.lower(),
+                _level_sort_key(rule["level"]),
+                rule["id"],
+            )
+
         def _rule_group_lines(bucket: dict[str, list]) -> list[str]:
-            """Return display lines for one bucket, sorted alphabetically by target name."""
+            """Return display lines for one bucket.
+
+            Targets sorted alphabetically; blank line between groups for readability.
+            Rules within each target sorted by: @everyone first, then role name, then level.
+            """
             lines: list[str] = []
-            for tid_str in sorted(bucket, key=lambda t: _target_name(t).lower()):
+            sorted_targets = sorted(bucket, key=lambda t: _target_name(t).lower())
+            for i, tid_str in enumerate(sorted_targets):
+                if i > 0:
+                    lines.append("")  # visual gap between target groups
                 lines.append(f"**{_target_name(tid_str)}**")
-                for rule in sorted(bucket[tid_str], key=lambda r: r["id"]):
+                for rule in sorted(bucket[tid_str], key=_rule_sort_key):
                     role_names = [_display_role(guild, rid) for rid in rule["role_ids"]]
                     lines.append(f"  › #{rule['id']}  {', '.join(role_names)} [{rule['level']}]")
             return lines
 
         cat_rule_lines = _rule_group_lines(cat_bucket)
         ch_rule_lines  = _rule_group_lines(ch_bucket)
+
+        # Accurate counts: rules (total entries) vs targets (distinct channels/categories).
+        n_cat_rules, n_cat_targets = sum(len(v) for v in cat_bucket.values()), len(cat_bucket)
+        n_ch_rules,  n_ch_targets  = sum(len(v) for v in ch_bucket.values()),  len(ch_bucket)
 
         _AR_HINT = "/access-rule add-category • /access-rule add-channel • /access-rule edit • /access-rule remove • /access-rule prune • /sync-permissions"
 
@@ -1415,8 +1437,15 @@ class AdminCog(commands.Cog):
             ),
             # Access rules: separate fields for category and channel targets.
             # Hint goes on the last field only.
-            *_fields_for(f"Category Rules ({len(cat_bucket)})", cat_rule_lines),
-            *_fields_for(f"Channel Rules ({len(ch_bucket)})", ch_rule_lines, hint=_AR_HINT),
+            *_fields_for(
+                f"Category Rules ({n_cat_rules} rules / {n_cat_targets} targets)",
+                cat_rule_lines,
+            ),
+            *_fields_for(
+                f"Channel Rules ({n_ch_rules} rules / {n_ch_targets} targets)",
+                ch_rule_lines,
+                hint=_AR_HINT,
+            ),
         ]
 
         # --- pack fields into embeds (≤6000 chars each) ---

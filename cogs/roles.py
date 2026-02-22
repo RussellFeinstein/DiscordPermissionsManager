@@ -34,6 +34,26 @@ def _lookup_role(
 
 
 # ---------------------------------------------------------------------------
+# Role hierarchy helpers
+# ---------------------------------------------------------------------------
+
+def _blocked_roles(executor: discord.Member, roles: list[discord.Role]) -> list[str]:
+    """Names of roles the executor cannot manage (at or above their top role). Empty = all ok."""
+    if executor.id == executor.guild.owner_id:
+        return []
+    return [r.name for r in roles if r >= executor.top_role]
+
+
+def _can_manage_member(executor: discord.Member, target: discord.Member) -> bool:
+    """True if executor outranks target in the role hierarchy (or is the guild owner)."""
+    if executor.id == executor.guild.owner_id:
+        return True
+    if target.id == executor.guild.owner_id:
+        return False
+    return executor.top_role > target.top_role
+
+
+# ---------------------------------------------------------------------------
 # Bundle helpers
 # ---------------------------------------------------------------------------
 
@@ -150,9 +170,23 @@ class RolesCog(commands.Cog):
             )
             return
 
+        blocked = _blocked_roles(interaction.user, bundle_roles)
+        if blocked:
+            await interaction.followup.send(
+                f"Cannot assign bundle **{bundle}** — it contains role(s) at or above your "
+                "highest role: " + ", ".join(f"**{n}**" for n in blocked),
+                ephemeral=True,
+            )
+            return
+
         members = [m for m in [member, member2, member3, member4, member5] if m is not None]
         lines = []
         for m in members:
+            if not _can_manage_member(interaction.user, m):
+                lines.append(
+                    f"**{m.display_name}**: ⚠️ Their role is equal to or above yours."
+                )
+                continue
             try:
                 added, removed = await _apply_bundle(m, bundle_roles, guild)
                 line = f"**{m.display_name}**: added {', '.join(r.name for r in added)}"
@@ -222,15 +256,29 @@ class RolesCog(commands.Cog):
         by_id: dict[int, discord.Role] = {r.id: r for r in guild.roles}
         by_name: dict[str, discord.Role] = {r.name: r for r in guild.roles}
 
+        all_bundle_roles = [
+            r for rs in bundles[bundle]
+            if (r := _lookup_role(rs, by_id, by_name)) is not None
+        ]
+        blocked = _blocked_roles(interaction.user, all_bundle_roles)
+        if blocked:
+            await interaction.followup.send(
+                f"Cannot remove bundle **{bundle}** — it contains role(s) at or above your "
+                "highest role: " + ", ".join(f"**{n}**" for n in blocked),
+                ephemeral=True,
+            )
+            return
+
         members = [m for m in [member, member2, member3, member4, member5] if m is not None]
         lines = []
         for m in members:
+            if not _can_manage_member(interaction.user, m):
+                lines.append(
+                    f"**{m.display_name}**: ⚠️ Their role is equal to or above yours."
+                )
+                continue
             member_roles_set = set(m.roles)
-            roles_to_remove = [
-                r for rs in bundles[bundle]
-                if (r := _lookup_role(rs, by_id, by_name)) is not None
-                and r in member_roles_set
-            ]
+            roles_to_remove = [r for r in all_bundle_roles if r in member_roles_set]
             if not roles_to_remove:
                 lines.append(f"**{m.display_name}**: no roles from this bundle to remove")
                 continue

@@ -113,6 +113,45 @@ def _display_role(guild: discord.Guild, role_str: str) -> str:
         return role_str  # legacy name stored before ID migration
 
 
+# Canonical hierarchy order for the five built-in permission levels.
+# Custom levels (any name not in this dict) sort after all defaults, alphabetically.
+_LEVEL_ORDER: dict[str, int] = {
+    name: i for i, name in enumerate(["None", "View", "Chat", "Mod", "Admin"])
+}
+
+
+def _level_sort_key(name: str) -> tuple[int, str]:
+    return (_LEVEL_ORDER.get(name, len(_LEVEL_ORDER)), name.lower())
+
+
+def _fields_for(title: str, lines: list[str], hint: str = "") -> list[tuple[str, str]]:
+    """Split a list of lines into ≤1024-char embed field (title, value) tuples.
+
+    The hint (if given) is appended as a small italic line to the last chunk only.
+    """
+    hint_line = f"\n*{hint}*" if hint else ""
+    if not lines:
+        return [(title, f"*(none)*{hint_line}")]
+    out: list[tuple[str, str]] = []
+    chunk: list[str] = []
+    chars = 0
+    first = True
+    for line in lines:
+        if chars + len(line) + 1 > 1024 and chunk:
+            out.append((title if first else f"{title} (cont.)", "\n".join(chunk)))
+            first = False
+            chunk = []
+            chars = 0
+        chunk.append(line)
+        chars += len(line) + 1
+    if chunk:
+        body = "\n".join(chunk)
+        if hint and len(body) + len(hint_line) <= 1024:
+            body += hint_line
+        out.append((title if first else f"{title} (cont.)", body))
+    return out
+
+
 def _build_bundle_embed(bundle_name: str, guild_id: int, guild: discord.Guild | None = None) -> discord.Embed:
     bundles = local_store.get_bundles(guild_id)
     role_strs = bundles.get(bundle_name, [])
@@ -1305,62 +1344,57 @@ class AdminCog(commands.Cog):
         baselines = local_store.get_category_baselines(gid)
         rules     = local_store.get_access_rules_data(gid).get("rules", [])
 
-        # --- build section lines ---
-        level_text = ", ".join(sorted(levels.keys())) or "*(none)*"
+        # --- Permission Levels: hierarchy order, one bullet per line ---
+        sorted_level_names = sorted(levels.keys(), key=_level_sort_key)
+        level_lines = [f"• {name}" for name in sorted_level_names]
+        level_text  = "\n".join(level_lines) if level_lines else "*(none)*"
 
+        # --- Role Bundles ---
         bundle_lines = []
         for name, role_strs in bundles.items():
             display = [_display_role(guild, rs) for rs in role_strs]
             bundle_lines.append(f"**{name}**: {', '.join(display) if display else '*empty*'}")
 
+        # --- Exclusive Groups ---
         eg_lines = []
         for name, role_strs in groups.items():
             display = [_display_role(guild, rs) for rs in role_strs]
             eg_lines.append(f"**{name}**: {', '.join(display) if display else '*empty*'}")
 
+        # --- Category Baselines ---
         bl_lines = []
         for cat_id_str, level in baselines.items():
             cat = guild.get_channel(int(cat_id_str))
             cat_name = cat.name if cat else f"(deleted {cat_id_str})"
             bl_lines.append(f"• **{cat_name}** → {level}")
 
-        rule_lines = []
+        # --- Access Rules: grouped by target (categories, then channels) ---
+        # bucket[target_id_str] = list of rules whose target_ids contains that id
+        cat_bucket: dict[str, list] = {}
+        ch_bucket:  dict[str, list] = {}
         for rule in rules:
-            role_names = [_display_role(guild, rid_str) for rid_str in rule["role_ids"]]
-            target_names = []
+            bucket = cat_bucket if rule["target_type"] == "category" else ch_bucket
             for tid_str in rule["target_ids"]:
-                t = guild.get_channel(int(tid_str))
-                target_names.append(t.name if t else f"(deleted {tid_str})")
-            rule_lines.append(
-                f"**#{rule['id']}** {', '.join(role_names)} → "
-                f"{rule['target_type']}({', '.join(target_names)}) "
-                f"[{rule['level']}]"
-            )
+                bucket.setdefault(tid_str, []).append(rule)
 
-        # --- helper: split lines into ≤1024-char field chunks ---
-        # hint (if given) is appended as a small italic line to the last chunk only.
-        def _fields_for(title: str, lines: list[str], hint: str = "") -> list[tuple[str, str]]:
-            hint_line = f"\n*{hint}*" if hint else ""
-            if not lines:
-                return [(title, f"*(none)*{hint_line}")]
-            out: list[tuple[str, str]] = []
-            chunk: list[str] = []
-            chars = 0
-            first = True
-            for line in lines:
-                if chars + len(line) + 1 > 1024 and chunk:
-                    out.append((title if first else f"{title} (cont.)", "\n".join(chunk)))
-                    first = False
-                    chunk = []
-                    chars = 0
-                chunk.append(line)
-                chars += len(line) + 1
-            if chunk:
-                body = "\n".join(chunk)
-                if hint and len(body) + len(hint_line) <= 1024:
-                    body += hint_line
-                out.append((title if first else f"{title} (cont.)", body))
-            return out
+        def _target_name(tid_str: str) -> str:
+            ch = guild.get_channel(int(tid_str))
+            return ch.name if ch else f"deleted:{tid_str}"
+
+        def _rule_group_lines(bucket: dict[str, list]) -> list[str]:
+            """Return display lines for one bucket, sorted alphabetically by target name."""
+            lines: list[str] = []
+            for tid_str in sorted(bucket, key=lambda t: _target_name(t).lower()):
+                lines.append(f"**{_target_name(tid_str)}**")
+                for rule in sorted(bucket[tid_str], key=lambda r: r["id"]):
+                    role_names = [_display_role(guild, rid) for rid in rule["role_ids"]]
+                    lines.append(f"  › #{rule['id']}  {', '.join(role_names)} [{rule['level']}]")
+            return lines
+
+        cat_rule_lines = _rule_group_lines(cat_bucket)
+        ch_rule_lines  = _rule_group_lines(ch_bucket)
+
+        _AR_HINT = "/access-rule add-category • /access-rule add-channel • /access-rule edit • /access-rule remove • /access-rule prune • /sync-permissions"
 
         all_fields: list[tuple[str, str]] = [
             (
@@ -1379,10 +1413,10 @@ class AdminCog(commands.Cog):
                 f"Category Baselines ({len(baselines)})", bl_lines,
                 hint="/category baseline-set • /category baseline-clear",
             ),
-            *_fields_for(
-                f"Access Rules ({len(rules)})", rule_lines,
-                hint="/access-rule add-category • /access-rule add-channel • /access-rule edit • /access-rule remove • /access-rule prune • /sync-permissions",
-            ),
+            # Access rules: separate fields for category and channel targets.
+            # Hint goes on the last field only.
+            *_fields_for(f"Category Rules ({len(cat_bucket)})", cat_rule_lines),
+            *_fields_for(f"Channel Rules ({len(ch_bucket)})", ch_rule_lines, hint=_AR_HINT),
         ]
 
         # --- pack fields into embeds (≤6000 chars each) ---

@@ -947,20 +947,29 @@ class AdminCog(commands.Cog):
 
     @access_rule.command(
         name="add-category",
-        description="Set a role's permission level for an entire category",
+        description="Set one or more roles' permission level for an entire category",
     )
     @app_commands.describe(
-        role="The role to configure",
+        role1="The role to configure",
         category="The category to apply the permission to",
         level="Permission level to apply",
+        role2="Additional role",
+        role3="Additional role",
+        role4="Additional role",
+        role5="Additional role",
     )
     async def ar_add_category(
         self,
         interaction: discord.Interaction,
-        role: discord.Role,
+        role1: discord.Role,
         category: discord.CategoryChannel,
         level: str,
+        role2: discord.Role | None = None,
+        role3: discord.Role | None = None,
+        role4: discord.Role | None = None,
+        role5: discord.Role | None = None,
     ):
+        roles = list(dict.fromkeys(r for r in [role1, role2, role3, role4, role5] if r is not None))
         levels = local_store.get_permission_levels(interaction.guild_id)
         if level not in levels:
             names = ", ".join(sorted(levels.keys()))
@@ -968,15 +977,17 @@ class AdminCog(commands.Cog):
                 f"Level **{level}** not found. Available: {names}", ephemeral=True
             )
             return
+        role_ids = [str(r.id) for r in roles]
+        role_label = ", ".join(f"**{r.name}**" for r in roles)
         rule_id = local_store.add_access_rule(
             interaction.guild_id,
-            role_ids=[str(role.id)],
+            role_ids=role_ids,
             target_type="category",
             target_ids=[str(category.id)],
             level=level,
         )
         await interaction.response.send_message(
-            f"Rule **#{rule_id}** added: **{role.name}** → **{category.name}** [{level}]",
+            f"Rule **#{rule_id}** added: {role_label} → **{category.name}** [{level}]",
             ephemeral=True,
         )
 
@@ -988,12 +999,16 @@ class AdminCog(commands.Cog):
 
     @access_rule.command(
         name="add-channel",
-        description="Set a role's permission level for one or more specific channels",
+        description="Set one or more roles' permission level for one or more specific channels",
     )
     @app_commands.describe(
-        role="The role to configure",
+        role1="The role to configure",
         channel1="The channel to apply the permission to",
         level="Permission level to apply",
+        role2="Additional role",
+        role3="Additional role",
+        role4="Additional role",
+        role5="Additional role",
         channel2="Additional channel",
         channel3="Additional channel",
         channel4="Additional channel",
@@ -1002,15 +1017,20 @@ class AdminCog(commands.Cog):
     async def ar_add_channel(
         self,
         interaction: discord.Interaction,
-        role: discord.Role,
+        role1: discord.Role,
         channel1: discord.abc.GuildChannel,
         level: str,
+        role2: discord.Role | None = None,
+        role3: discord.Role | None = None,
+        role4: discord.Role | None = None,
+        role5: discord.Role | None = None,
         channel2: discord.abc.GuildChannel | None = None,
         channel3: discord.abc.GuildChannel | None = None,
         channel4: discord.abc.GuildChannel | None = None,
         channel5: discord.abc.GuildChannel | None = None,
     ):
-        channels = [c for c in [channel1, channel2, channel3, channel4, channel5] if c is not None]
+        roles = list(dict.fromkeys(r for r in [role1, role2, role3, role4, role5] if r is not None))
+        channels = list(dict.fromkeys(c for c in [channel1, channel2, channel3, channel4, channel5] if c is not None))
 
         bad = [c.name for c in channels if isinstance(c, discord.CategoryChannel)]
         if bad:
@@ -1029,11 +1049,13 @@ class AdminCog(commands.Cog):
             )
             return
 
+        role_ids = [str(r.id) for r in roles]
+        role_label = ", ".join(f"**{r.name}**" for r in roles)
         added = []
         for channel in channels:
             rule_id = local_store.add_access_rule(
                 interaction.guild_id,
-                role_ids=[str(role.id)],
+                role_ids=role_ids,
                 target_type="channel",
                 target_ids=[str(channel.id)],
                 level=level,
@@ -1041,7 +1063,7 @@ class AdminCog(commands.Cog):
             added.append(f"• **#{rule_id}** #{channel.name}")
 
         await interaction.response.send_message(
-            f"Added {len(added)} rule(s) for **{role.name}** [{level}]:\n"
+            f"Added {len(added)} rule(s) for {role_label} [{level}]:\n"
             + "\n".join(added),
             ephemeral=True,
         )

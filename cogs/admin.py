@@ -82,7 +82,7 @@ def _build_level_embed(
     perms: dict[str, bool] = levels.get(level_name, {})
 
     embed = discord.Embed(
-        title=f"Permission Level — {level_name}",
+        description=f"# Permission Level — {level_name}",
         color=discord.Color.blurple(),
     )
 
@@ -158,10 +158,10 @@ def _build_bundle_embed(bundle_name: str, guild_id: int, guild: discord.Guild | 
         roles_display = [_display_role(guild, rs) for rs in role_strs]
     else:
         roles_display = role_strs
+    body = "\n".join(f"• {r}" for r in roles_display) if roles_display else "*No roles yet*"
     embed = discord.Embed(
-        title=f"Bundle — {bundle_name}",
         color=discord.Color.green(),
-        description="\n".join(f"• {r}" for r in roles_display) if roles_display else "*No roles yet*",
+        description=f"# Bundle — {bundle_name}\n{body}",
     )
     return embed
 
@@ -173,10 +173,10 @@ def _build_eg_embed(group_name: str, guild_id: int, guild: discord.Guild | None 
         roles_display = [_display_role(guild, rs) for rs in role_strs]
     else:
         roles_display = role_strs
+    body = "\n".join(f"• {r}" for r in roles_display) if roles_display else "*No roles yet*"
     embed = discord.Embed(
-        title=f"Exclusive Group — {group_name}",
         color=discord.Color.orange(),
-        description="\n".join(f"• {r}" for r in roles_display) if roles_display else "*No roles yet*",
+        description=f"# Exclusive Group — {group_name}\n{body}",
     )
     return embed
 

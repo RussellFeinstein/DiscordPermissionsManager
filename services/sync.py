@@ -115,21 +115,8 @@ def build_permission_plan(guild: discord.Guild) -> PermissionPlan:
     rules_data = local_store.get_access_rules_data(guild.id)
     for rule in rules_data.get("rules", []):
         level_name: str = rule["level"]
-        overwrite_dir: str = rule.get("overwrite", "Allow")
 
-        base_overwrite = level_to_overwrite(level_name, guild.id)
-
-        # Deny rules flip every explicit Allow → explicit Deny.
-        # Explicit Deny and neutral entries are left neutral — the goal is
-        # only to block what the level would grant, not to grant what it blocks.
-        if overwrite_dir == "Deny":
-            flipped: dict[str, bool] = {}
-            for attr, val in base_overwrite:
-                if val is True:
-                    flipped[attr] = False
-            final_overwrite = discord.PermissionOverwrite(**flipped)
-        else:
-            final_overwrite = base_overwrite
+        final_overwrite = level_to_overwrite(level_name, guild.id)
 
         # Resolve target channels/categories
         targets: list[discord.abc.GuildChannel] = []
@@ -171,7 +158,7 @@ def build_permission_plan(guild: discord.Guild) -> PermissionPlan:
                 plan.add(target.id, OverwriteEntry(
                     target=discord_role,
                     overwrite=final_overwrite,
-                    source=f"{discord_role.name} → {level_name} ({overwrite_dir})",
+                    source=f"{discord_role.name} → {level_name}",
                 ))
 
     return plan

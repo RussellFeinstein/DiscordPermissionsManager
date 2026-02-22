@@ -36,7 +36,7 @@ Access rule commands  (/access-rule ...)
   /access-rule add-category <role> <category> <level>   — rule targeting a category
   /access-rule add-channel  <role> <channel>  <level>   — rule targeting one or more channels
   /access-rule remove <id>                              — delete a rule by its ID
-  /access-rule edit <id> [level] [overwrite]            — change level or allow/deny
+  /access-rule edit <id> <level>                        — change the permission level
   /access-rule prune                                    — remove stale rules/baselines
 
 Status  (/status)
@@ -932,11 +932,10 @@ class AdminCog(commands.Cog):
                 t = interaction.guild.get_channel(int(tid_str))
                 target_names.append(t.name if t else f"(deleted {tid_str})")
             target_type = rule["target_type"].title()
-            overwrite = rule.get("overwrite", "Allow")
             lines.append(
                 f"**#{rule['id']}** {', '.join(role_names)} → "
                 f"{target_type}({', '.join(target_names)}) "
-                f"[{rule['level']} / {overwrite}]"
+                f"[{rule['level']}]"
             )
         embed = discord.Embed(
             title="Access Rules",
@@ -948,25 +947,19 @@ class AdminCog(commands.Cog):
 
     @access_rule.command(
         name="add-category",
-        description="Grant a role a permission level for an entire category",
+        description="Set a role's permission level for an entire category",
     )
     @app_commands.describe(
-        role="The role to grant access",
+        role="The role to configure",
         category="The category to apply the permission to",
-        level="Permission level to grant",
-        overwrite="Allow or Deny (default: Allow)",
+        level="Permission level to apply",
     )
-    @app_commands.choices(overwrite=[
-        app_commands.Choice(name="Allow", value="Allow"),
-        app_commands.Choice(name="Deny",  value="Deny"),
-    ])
     async def ar_add_category(
         self,
         interaction: discord.Interaction,
         role: discord.Role,
         category: discord.CategoryChannel,
         level: str,
-        overwrite: str = "Allow",
     ):
         levels = local_store.get_permission_levels(interaction.guild_id)
         if level not in levels:
@@ -981,31 +974,25 @@ class AdminCog(commands.Cog):
             target_type="category",
             target_ids=[str(category.id)],
             level=level,
-            overwrite=overwrite,
         )
         await interaction.response.send_message(
-            f"Rule **#{rule_id}** added: **{role.name}** → **{category.name}** [{level} / {overwrite}]",
+            f"Rule **#{rule_id}** added: **{role.name}** → **{category.name}** [{level}]",
             ephemeral=True,
         )
 
     @access_rule.command(
         name="add-channel",
-        description="Grant a role a permission level for one or more specific channels",
+        description="Set a role's permission level for one or more specific channels",
     )
     @app_commands.describe(
-        role="The role to grant access",
+        role="The role to configure",
         channel1="The channel to apply the permission to",
-        level="Permission level to grant",
+        level="Permission level to apply",
         channel2="Additional channel",
         channel3="Additional channel",
         channel4="Additional channel",
         channel5="Additional channel",
-        overwrite="Allow or Deny (default: Allow)",
     )
-    @app_commands.choices(overwrite=[
-        app_commands.Choice(name="Allow", value="Allow"),
-        app_commands.Choice(name="Deny",  value="Deny"),
-    ])
     async def ar_add_channel(
         self,
         interaction: discord.Interaction,
@@ -1016,7 +1003,6 @@ class AdminCog(commands.Cog):
         channel3: discord.abc.GuildChannel | None = None,
         channel4: discord.abc.GuildChannel | None = None,
         channel5: discord.abc.GuildChannel | None = None,
-        overwrite: str = "Allow",
     ):
         channels = [c for c in [channel1, channel2, channel3, channel4, channel5] if c is not None]
 
@@ -1045,12 +1031,11 @@ class AdminCog(commands.Cog):
                 target_type="channel",
                 target_ids=[str(channel.id)],
                 level=level,
-                overwrite=overwrite,
             )
             added.append(f"• **#{rule_id}** #{channel.name}")
 
         await interaction.response.send_message(
-            f"Added {len(added)} rule(s) for **{role.name}** [{level} / {overwrite}]:\n"
+            f"Added {len(added)} rule(s) for **{role.name}** [{level}]:\n"
             + "\n".join(added),
             ephemeral=True,
         )
@@ -1076,7 +1061,7 @@ class AdminCog(commands.Cog):
         summary = (
             f"**#{rule_id}** {', '.join(role_names)} → "
             f"{rule['target_type']}({', '.join(target_names)}) "
-            f"[{rule['level']}/{rule.get('overwrite', 'Allow')}]"
+            f"[{rule['level']}]"
         )
         view = ConfirmView()
         await interaction.response.send_message(
@@ -1118,47 +1103,35 @@ class AdminCog(commands.Cog):
             label = (
                 f"#{rule['id']} {', '.join(role_names)} → "
                 f"{', '.join(target_names)} [{rule['level']}]"
-            )[:100]  # Discord choice names capped at 100 chars
+            )[:100]
             if current in str(rule["id"]) or current.lower() in label.lower():
                 choices.append(app_commands.Choice(name=label, value=rule["id"]))
         return choices[:25]
 
     @access_rule.command(
         name="edit",
-        description="Change the permission level or allow/deny on an existing access rule",
+        description="Change the permission level on an existing access rule",
     )
     @app_commands.describe(
         rule_id="The rule to edit (select from the list)",
-        level="New permission level (leave blank to keep current)",
-        overwrite="New allow/deny direction (leave blank to keep current)",
+        level="New permission level",
     )
-    @app_commands.choices(overwrite=[
-        app_commands.Choice(name="Allow", value="Allow"),
-        app_commands.Choice(name="Deny",  value="Deny"),
-    ])
     async def ar_edit(
         self,
         interaction: discord.Interaction,
         rule_id: int,
-        level: str | None = None,
-        overwrite: str | None = None,
+        level: str,
     ):
-        if level is None and overwrite is None:
+        levels = local_store.get_permission_levels(interaction.guild_id)
+        if level not in levels:
+            names = ", ".join(sorted(levels.keys()))
             await interaction.response.send_message(
-                "Nothing to change — provide a new `level` and/or `overwrite`.", ephemeral=True
+                f"Level **{level}** not found. Available: {names}", ephemeral=True
             )
             return
-        if level is not None:
-            levels = local_store.get_permission_levels(interaction.guild_id)
-            if level not in levels:
-                names = ", ".join(sorted(levels.keys()))
-                await interaction.response.send_message(
-                    f"Level **{level}** not found. Available: {names}", ephemeral=True
-                )
-                return
         try:
             updated = local_store.update_access_rule(
-                interaction.guild_id, rule_id, level=level, overwrite=overwrite
+                interaction.guild_id, rule_id, level=level
             )
         except KeyError:
             await interaction.response.send_message(
@@ -1166,8 +1139,7 @@ class AdminCog(commands.Cog):
             )
             return
         await interaction.response.send_message(
-            f"Rule **#{rule_id}** updated → level: **{updated['level']}**, "
-            f"direction: **{updated['overwrite']}**.",
+            f"Rule **#{rule_id}** updated → level: **{updated['level']}**.",
             ephemeral=True,
         )
 
@@ -1286,7 +1258,7 @@ class AdminCog(commands.Cog):
             rule_lines.append(
                 f"**#{rule['id']}** {', '.join(role_names)} → "
                 f"{rule['target_type']}({', '.join(target_names)}) "
-                f"[{rule['level']}/{rule.get('overwrite', 'Allow')}]"
+                f"[{rule['level']}]"
             )
 
         # --- helper: split lines into ≤1024-char field chunks ---

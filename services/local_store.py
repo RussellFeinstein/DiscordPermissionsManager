@@ -253,7 +253,7 @@ def get_access_rules_data(guild_id: int) -> dict:
     """
     Returns {"next_id": int, "rules": [...]}.
     Each rule: {"id": int, "role_ids": [str], "target_type": "category"|"channel",
-                "target_ids": [str], "level": str, "overwrite": "Allow"|"Deny"}.
+                "target_ids": [str], "level": str}.
     """
     return _load(_guild_dir(guild_id) / "access_rules.json", {"next_id": 1, "rules": []})
 
@@ -264,7 +264,6 @@ def add_access_rule(
     target_type: str,
     target_ids: list[str],
     level: str,
-    overwrite: str = "Allow",
 ) -> int:
     """Add an access rule. Returns the new rule's integer ID."""
     with _get_lock(guild_id):
@@ -276,7 +275,6 @@ def add_access_rule(
             "target_type": target_type,
             "target_ids": target_ids,
             "level": level,
-            "overwrite": overwrite,
         })
         data["next_id"] = rule_id + 1
         _save(_guild_dir(guild_id) / "access_rules.json", data)
@@ -297,12 +295,10 @@ def update_access_rule(
     guild_id: int,
     rule_id: int,
     *,
-    level: str | None = None,
-    overwrite: str | None = None,
+    level: str,
 ) -> dict:
     """
-    Update an existing access rule in-place.
-    Only fields that are not None are modified; others are preserved.
+    Update the level on an existing access rule in-place.
     Returns a copy of the updated rule.
     Raises KeyError if the rule is not found.
     """
@@ -311,10 +307,7 @@ def update_access_rule(
         rule = next((r for r in data["rules"] if r["id"] == rule_id), None)
         if rule is None:
             raise KeyError(f"Access rule #{rule_id} not found")
-        if level is not None:
-            rule["level"] = level
-        if overwrite is not None:
-            rule["overwrite"] = overwrite
+        rule["level"] = level
         _save(_guild_dir(guild_id) / "access_rules.json", data)
         return dict(rule)
 

@@ -3,6 +3,8 @@ roles.py — /assign and /remove commands.
 
 Bundles (named collections of roles applied together) are managed via
 /bundle commands in cogs/admin.py and stored in data/{guild_id}/bundles.json.
+
+Roles are stored by Discord ID (with legacy name fallback for older data).
 """
 
 import discord
@@ -10,6 +12,25 @@ from discord import app_commands
 from discord.ext import commands
 
 from services import local_store
+
+
+# ---------------------------------------------------------------------------
+# ID-first role resolution helper
+# ---------------------------------------------------------------------------
+
+def _lookup_role(
+    role_str: str,
+    by_id: dict[int, discord.Role],
+    by_name: dict[str, discord.Role],
+) -> discord.Role | None:
+    """
+    Resolve a stored role string to a discord.Role.
+    Tries integer Discord ID first; falls back to name for legacy data.
+    """
+    try:
+        return by_id.get(int(role_str))
+    except ValueError:
+        return by_name.get(role_str)
 
 
 # ---------------------------------------------------------------------------
@@ -30,25 +51,32 @@ async def _apply_bundle(
     to_remove: list[discord.Role] = []
 
     groups = local_store.get_exclusive_groups(guild.id)
-    # Invert to role_name → group_name for quick lookup
-    role_to_group = {r: g for g, roles in groups.items() for r in roles}
+    discord_roles_by_id: dict[int, discord.Role] = {r.id: r for r in guild.roles}
+    discord_roles_by_name: dict[str, discord.Role] = {r.name: r for r in guild.roles}
+
+    # Build role → group mapping using ID-first resolution
+    role_to_group: dict[discord.Role, str] = {}
+    for group_name, role_strs in groups.items():
+        for rs in role_strs:
+            r = _lookup_role(rs, discord_roles_by_id, discord_roles_by_name)
+            if r:
+                role_to_group[r] = group_name
 
     # Find which exclusive groups the incoming roles belong to
     incoming_groups: set[str] = set()
     for role in bundle_roles:
-        g = role_to_group.get(role.name)
+        g = role_to_group.get(role)
         if g:
             incoming_groups.add(g)
 
     # Collect any roles the member already holds that conflict
     if incoming_groups:
-        member_role_names = {r.name for r in member.roles}
+        member_roles_set = set(member.roles)
         for group in incoming_groups:
-            for role_name in groups[group]:
-                if role_name in member_role_names:
-                    discord_role = discord.utils.get(guild.roles, name=role_name)
-                    if discord_role and discord_role not in bundle_roles:
-                        to_remove.append(discord_role)
+            for rs in groups[group]:
+                discord_role = _lookup_role(rs, discord_roles_by_id, discord_roles_by_name)
+                if discord_role and discord_role in member_roles_set and discord_role not in bundle_roles:
+                    to_remove.append(discord_role)
 
     if to_remove:
         await member.remove_roles(*to_remove, reason="Exclusive group conflict — bundle assignment")
@@ -103,14 +131,17 @@ class RolesCog(commands.Cog):
             return
 
         guild = interaction.guild
-        discord_roles_map = {r.name: r for r in guild.roles}
+        by_id: dict[int, discord.Role] = {r.id: r for r in guild.roles}
+        by_name: dict[str, discord.Role] = {r.name: r for r in guild.roles}
 
         bundle_roles = [
-            discord_roles_map[name]
-            for name in bundles[bundle]
-            if name in discord_roles_map
+            r for rs in bundles[bundle]
+            if (r := _lookup_role(rs, by_id, by_name)) is not None
         ]
-        missing = [name for name in bundles[bundle] if name not in discord_roles_map]
+        missing = [
+            rs for rs in bundles[bundle]
+            if _lookup_role(rs, by_id, by_name) is None
+        ]
 
         if not bundle_roles:
             await interaction.followup.send(
@@ -188,15 +219,17 @@ class RolesCog(commands.Cog):
             return
 
         guild = interaction.guild
-        discord_roles_map = {r.name: r for r in guild.roles}
+        by_id: dict[int, discord.Role] = {r.id: r for r in guild.roles}
+        by_name: dict[str, discord.Role] = {r.name: r for r in guild.roles}
 
         members = [m for m in [member, member2, member3, member4, member5] if m is not None]
         lines = []
         for m in members:
+            member_roles_set = set(m.roles)
             roles_to_remove = [
-                discord_roles_map[name]
-                for name in bundles[bundle]
-                if name in discord_roles_map and discord_roles_map[name] in m.roles
+                r for rs in bundles[bundle]
+                if (r := _lookup_role(rs, by_id, by_name)) is not None
+                and r in member_roles_set
             ]
             if not roles_to_remove:
                 lines.append(f"**{m.display_name}**: no roles from this bundle to remove")

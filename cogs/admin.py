@@ -36,6 +36,8 @@ Access rule commands  (/access-rule ...)
   /access-rule add-category <role> <category> <level>   — rule targeting a category
   /access-rule add-channel  <role> <channel>  <level>   — rule targeting a channel
   /access-rule remove <id>                              — delete a rule by its ID
+  /access-rule edit <id> [level] [overwrite]            — change level or allow/deny
+  /access-rule prune                                    — remove stale rules/baselines
 
 Status  (/status)
   /status — show counts of all configured items
@@ -89,13 +91,26 @@ def _build_level_embed(
     return embed
 
 
-def _build_bundle_embed(bundle_name: str, guild_id: int) -> discord.Embed:
+def _display_role(guild: discord.Guild, role_str: str) -> str:
+    """Resolve a stored role ID (or legacy name) to a display name."""
+    try:
+        r = guild.get_role(int(role_str))
+        return r.name if r else f"(deleted {role_str})"
+    except ValueError:
+        return role_str  # legacy name stored before ID migration
+
+
+def _build_bundle_embed(bundle_name: str, guild_id: int, guild: discord.Guild | None = None) -> discord.Embed:
     bundles = local_store.get_bundles(guild_id)
-    roles = bundles.get(bundle_name, [])
+    role_strs = bundles.get(bundle_name, [])
+    if guild:
+        roles_display = [_display_role(guild, rs) for rs in role_strs]
+    else:
+        roles_display = role_strs
     embed = discord.Embed(
         title=f"Bundle — {bundle_name}",
         color=discord.Color.green(),
-        description="\n".join(f"• {r}" for r in roles) if roles else "*No roles yet*",
+        description="\n".join(f"• {r}" for r in roles_display) if roles_display else "*No roles yet*",
     )
     return embed
 
@@ -243,6 +258,31 @@ class LevelValueView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
+# Confirmation UI — used by destructive delete commands
+# ---------------------------------------------------------------------------
+
+class ConfirmView(discord.ui.View):
+    """Two-button (Confirm / Cancel) view for destructive operations."""
+
+    def __init__(self):
+        super().__init__(timeout=30.0)
+        self.confirmed: bool | None = None
+        self.button_interaction: discord.Interaction | None = None
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm_btn(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        self.confirmed = True
+        self.button_interaction = interaction
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        self.confirmed = False
+        self.button_interaction = interaction
+        self.stop()
+
+
+# ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 
@@ -357,15 +397,32 @@ class AdminCog(commands.Cog):
     @level.command(name="delete", description="Delete a permission level")
     @app_commands.describe(name="The level to delete")
     async def level_delete(self, interaction: discord.Interaction, name: str):
-        try:
-            local_store.delete_level(interaction.guild_id, name)
-        except KeyError:
+        if name not in local_store.get_permission_levels(interaction.guild_id):
             await interaction.response.send_message(
                 f"Level **{name}** not found.", ephemeral=True
             )
             return
+        view = ConfirmView()
         await interaction.response.send_message(
-            f"Deleted level **{name}**.", ephemeral=True
+            f"Delete permission level **{name}**? This cannot be undone.",
+            view=view, ephemeral=True,
+        )
+        await view.wait()
+        if view.confirmed is None:
+            await interaction.edit_original_response(content="Timed out.", view=None)
+            return
+        if not view.confirmed:
+            await view.button_interaction.response.edit_message(content="Cancelled.", view=None)
+            return
+        try:
+            local_store.delete_level(interaction.guild_id, name)
+        except KeyError:
+            await view.button_interaction.response.edit_message(
+                content=f"Level **{name}** not found.", view=None
+            )
+            return
+        await view.button_interaction.response.edit_message(
+            content=f"Deleted level **{name}**.", view=None
         )
 
     @level.command(
@@ -430,10 +487,11 @@ class AdminCog(commands.Cog):
             await interaction.response.send_message("No bundles defined yet.", ephemeral=True)
             return
         embed = discord.Embed(title="Role Bundles", color=discord.Color.green())
-        for name, roles in bundles.items():
+        for name, role_strs in bundles.items():
+            display = [_display_role(interaction.guild, rs) for rs in role_strs]
             embed.add_field(
                 name=name,
-                value=", ".join(roles) if roles else "*empty*",
+                value=", ".join(display) if display else "*empty*",
                 inline=False,
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -448,7 +506,7 @@ class AdminCog(commands.Cog):
             )
             return
         await interaction.response.send_message(
-            embed=_build_bundle_embed(name, interaction.guild_id), ephemeral=True
+            embed=_build_bundle_embed(name, interaction.guild_id, interaction.guild), ephemeral=True
         )
 
     @bundle_view.autocomplete("name")
@@ -471,15 +529,32 @@ class AdminCog(commands.Cog):
     @bundle.command(name="delete", description="Delete a bundle")
     @app_commands.describe(name="The bundle to delete")
     async def bundle_delete(self, interaction: discord.Interaction, name: str):
-        try:
-            local_store.delete_bundle(interaction.guild_id, name)
-        except KeyError:
+        if name not in local_store.get_bundles(interaction.guild_id):
             await interaction.response.send_message(
                 f"Bundle **{name}** not found.", ephemeral=True
             )
             return
+        view = ConfirmView()
         await interaction.response.send_message(
-            f"Deleted bundle **{name}**.", ephemeral=True
+            f"Delete bundle **{name}**? This cannot be undone.",
+            view=view, ephemeral=True,
+        )
+        await view.wait()
+        if view.confirmed is None:
+            await interaction.edit_original_response(content="Timed out.", view=None)
+            return
+        if not view.confirmed:
+            await view.button_interaction.response.edit_message(content="Cancelled.", view=None)
+            return
+        try:
+            local_store.delete_bundle(interaction.guild_id, name)
+        except KeyError:
+            await view.button_interaction.response.edit_message(
+                content=f"Bundle **{name}** not found.", view=None
+            )
+            return
+        await view.button_interaction.response.edit_message(
+            content=f"Deleted bundle **{name}**.", view=None
         )
 
     @bundle.command(name="add-role", description="Add one or more Discord roles to a bundle")
@@ -504,36 +579,47 @@ class AdminCog(commands.Cog):
         roles = [r for r in [role1, role2, role3, role4, role5] if r is not None]
         try:
             for role in roles:
-                local_store.add_role_to_bundle(interaction.guild_id, name, role.name)
+                local_store.add_role_to_bundle(interaction.guild_id, name, str(role.id))
         except KeyError:
             await interaction.response.send_message(
                 f"Bundle **{name}** not found.", ephemeral=True
             )
             return
         await interaction.response.send_message(
-            embed=_build_bundle_embed(name, interaction.guild_id), ephemeral=True
+            embed=_build_bundle_embed(name, interaction.guild_id, interaction.guild), ephemeral=True
         )
 
     @bundle.command(name="remove-role", description="Remove a role from a bundle")
     @app_commands.describe(
         name="The bundle",
-        role_name="Name of the role to remove",
+        role="The role to remove",
     )
     async def bundle_remove_role(
         self,
         interaction: discord.Interaction,
         name: str,
-        role_name: str,
+        role: discord.Role,
     ):
-        try:
-            local_store.remove_role_from_bundle(interaction.guild_id, name, role_name)
-        except KeyError:
+        bundles = local_store.get_bundles(interaction.guild_id)
+        if name not in bundles:
             await interaction.response.send_message(
                 f"Bundle **{name}** not found.", ephemeral=True
             )
             return
+        # Find the stored entry matching this role (by ID or legacy name)
+        stored = bundles[name]
+        to_remove = next(
+            (e for e in stored if e == str(role.id) or e == role.name),
+            None,
+        )
+        if to_remove is None:
+            await interaction.response.send_message(
+                f"**{role.name}** is not in bundle **{name}**.", ephemeral=True
+            )
+            return
+        local_store.remove_role_from_bundle(interaction.guild_id, name, to_remove)
         await interaction.response.send_message(
-            embed=_build_bundle_embed(name, interaction.guild_id), ephemeral=True
+            embed=_build_bundle_embed(name, interaction.guild_id, interaction.guild), ephemeral=True
         )
 
     # Bundle name autocomplete
@@ -552,20 +638,6 @@ class AdminCog(commands.Cog):
     @bundle_remove_role.autocomplete("name")
     async def bundle_name_ac(self, interaction, current):
         return await self._bundle_name_autocomplete(interaction, current)
-
-    # Role name autocomplete for bundle remove-role (shows only roles in that bundle)
-    @bundle_remove_role.autocomplete("role_name")
-    async def bundle_role_name_ac(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        bundle_name = interaction.namespace.name
-        bundles = local_store.get_bundles(interaction.guild_id)
-        roles = bundles.get(bundle_name, [])
-        return [
-            app_commands.Choice(name=r, value=r)
-            for r in roles
-            if current.lower() in r.lower()
-        ][:25]
 
     # ==================================================================
     # /exclusive-group group
@@ -587,10 +659,11 @@ class AdminCog(commands.Cog):
             )
             return
         embed = discord.Embed(title="Exclusive Groups", color=discord.Color.orange())
-        for name, roles in groups.items():
+        for name, role_strs in groups.items():
+            display = [_display_role(interaction.guild, rs) for rs in role_strs]
             embed.add_field(
                 name=name,
-                value=", ".join(roles) if roles else "*no roles yet*",
+                value=", ".join(display) if display else "*no roles yet*",
                 inline=False,
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -611,47 +684,75 @@ class AdminCog(commands.Cog):
     @exclusive_group.command(name="delete", description="Delete an exclusive group")
     @app_commands.describe(name="The group to delete")
     async def eg_delete(self, interaction: discord.Interaction, name: str):
-        try:
-            local_store.delete_exclusive_group(interaction.guild_id, name)
-        except KeyError:
+        if name not in local_store.get_exclusive_groups(interaction.guild_id):
             await interaction.response.send_message(
                 f"Exclusive group **{name}** not found.", ephemeral=True
             )
             return
+        view = ConfirmView()
         await interaction.response.send_message(
-            f"Deleted exclusive group **{name}**.", ephemeral=True
+            f"Delete exclusive group **{name}**? This cannot be undone.",
+            view=view, ephemeral=True,
+        )
+        await view.wait()
+        if view.confirmed is None:
+            await interaction.edit_original_response(content="Timed out.", view=None)
+            return
+        if not view.confirmed:
+            await view.button_interaction.response.edit_message(content="Cancelled.", view=None)
+            return
+        try:
+            local_store.delete_exclusive_group(interaction.guild_id, name)
+        except KeyError:
+            await view.button_interaction.response.edit_message(
+                content=f"Exclusive group **{name}** not found.", view=None
+            )
+            return
+        await view.button_interaction.response.edit_message(
+            content=f"Deleted exclusive group **{name}**.", view=None
         )
 
     @exclusive_group.command(name="add-role", description="Add a Discord role to an exclusive group")
     @app_commands.describe(name="The exclusive group", role="Role to add")
     async def eg_add_role(self, interaction: discord.Interaction, name: str, role: discord.Role):
         try:
-            local_store.add_role_to_exclusive_group(interaction.guild_id, name, role.name)
+            local_store.add_role_to_exclusive_group(interaction.guild_id, name, str(role.id))
         except KeyError:
             await interaction.response.send_message(
                 f"Exclusive group **{name}** not found.", ephemeral=True
             )
             return
         groups = local_store.get_exclusive_groups(interaction.guild_id)
-        roles = groups.get(name, [])
+        display = [_display_role(interaction.guild, rs) for rs in groups.get(name, [])]
         await interaction.response.send_message(
-            f"**{name}**: {', '.join(roles)}", ephemeral=True
+            f"**{name}**: {', '.join(display)}", ephemeral=True
         )
 
     @exclusive_group.command(name="remove-role", description="Remove a role from an exclusive group")
-    @app_commands.describe(name="The exclusive group", role_name="Name of the role to remove")
-    async def eg_remove_role(self, interaction: discord.Interaction, name: str, role_name: str):
-        try:
-            local_store.remove_role_from_exclusive_group(interaction.guild_id, name, role_name)
-        except KeyError:
+    @app_commands.describe(name="The exclusive group", role="The role to remove")
+    async def eg_remove_role(self, interaction: discord.Interaction, name: str, role: discord.Role):
+        groups = local_store.get_exclusive_groups(interaction.guild_id)
+        if name not in groups:
             await interaction.response.send_message(
                 f"Exclusive group **{name}** not found.", ephemeral=True
             )
             return
+        # Find stored entry matching this role (by ID or legacy name)
+        stored = groups[name]
+        to_remove = next(
+            (e for e in stored if e == str(role.id) or e == role.name),
+            None,
+        )
+        if to_remove is None:
+            await interaction.response.send_message(
+                f"**{role.name}** is not in group **{name}**.", ephemeral=True
+            )
+            return
+        local_store.remove_role_from_exclusive_group(interaction.guild_id, name, to_remove)
         groups = local_store.get_exclusive_groups(interaction.guild_id)
-        roles = groups.get(name, [])
+        display = [_display_role(interaction.guild, rs) for rs in groups.get(name, [])]
         await interaction.response.send_message(
-            f"**{name}**: {', '.join(roles) if roles else '*empty*'}", ephemeral=True
+            f"**{name}**: {', '.join(display) if display else '*empty*'}", ephemeral=True
         )
 
     # Autocomplete helpers for exclusive-group commands
@@ -670,19 +771,6 @@ class AdminCog(commands.Cog):
     @eg_remove_role.autocomplete("name")
     async def eg_name_ac(self, interaction, current):
         return await self._eg_name_autocomplete(interaction, current)
-
-    @eg_remove_role.autocomplete("role_name")
-    async def eg_role_name_ac(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        group_name = interaction.namespace.name
-        groups = local_store.get_exclusive_groups(interaction.guild_id)
-        roles = groups.get(group_name, [])
-        return [
-            app_commands.Choice(name=r, value=r)
-            for r in roles
-            if current.lower() in r.lower()
-        ][:25]
 
 
     # ==================================================================
@@ -904,17 +992,182 @@ class AdminCog(commands.Cog):
         name="remove",
         description="Remove an access rule by its ID number",
     )
-    @app_commands.describe(rule_id="The ID number shown in /access-rule list")
+    @app_commands.describe(rule_id="The rule to remove (select from the list)")
     async def ar_remove(self, interaction: discord.Interaction, rule_id: int):
-        try:
-            local_store.remove_access_rule(interaction.guild_id, rule_id)
-        except KeyError:
+        data = local_store.get_access_rules_data(interaction.guild_id)
+        rule = next((r for r in data.get("rules", []) if r["id"] == rule_id), None)
+        if rule is None:
             await interaction.response.send_message(
                 f"Access rule **#{rule_id}** not found.", ephemeral=True
             )
             return
+        role_names = []
+        for rid_str in rule["role_ids"]:
+            r = interaction.guild.get_role(int(rid_str))
+            role_names.append(r.name if r else f"(deleted {rid_str})")
+        target_names = []
+        for tid_str in rule["target_ids"]:
+            t = interaction.guild.get_channel(int(tid_str))
+            target_names.append(t.name if t else f"(deleted {tid_str})")
+        summary = (
+            f"**#{rule_id}** {', '.join(role_names)} → "
+            f"{rule['target_type']}({', '.join(target_names)}) "
+            f"[{rule['level']}/{rule.get('overwrite', 'Allow')}]"
+        )
+        view = ConfirmView()
         await interaction.response.send_message(
-            f"Deleted access rule **#{rule_id}**.", ephemeral=True
+            f"Remove access rule {summary}?", view=view, ephemeral=True,
+        )
+        await view.wait()
+        if view.confirmed is None:
+            await interaction.edit_original_response(content="Timed out.", view=None)
+            return
+        if not view.confirmed:
+            await view.button_interaction.response.edit_message(content="Cancelled.", view=None)
+            return
+        try:
+            local_store.remove_access_rule(interaction.guild_id, rule_id)
+        except KeyError:
+            await view.button_interaction.response.edit_message(
+                content=f"Access rule **#{rule_id}** not found.", view=None
+            )
+            return
+        await view.button_interaction.response.edit_message(
+            content=f"Deleted access rule **#{rule_id}**.", view=None
+        )
+
+    @ar_remove.autocomplete("rule_id")
+    async def ar_remove_ac(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[int]]:
+        data = local_store.get_access_rules_data(interaction.guild_id)
+        choices = []
+        for rule in data.get("rules", []):
+            role_names = []
+            for rid_str in rule["role_ids"]:
+                r = interaction.guild.get_role(int(rid_str))
+                role_names.append(r.name if r else f"deleted:{rid_str}")
+            target_names = []
+            for tid_str in rule["target_ids"]:
+                t = interaction.guild.get_channel(int(tid_str))
+                target_names.append(t.name if t else f"deleted:{tid_str}")
+            label = (
+                f"#{rule['id']} {', '.join(role_names)} → "
+                f"{', '.join(target_names)} [{rule['level']}]"
+            )[:100]  # Discord choice names capped at 100 chars
+            if current in str(rule["id"]) or current.lower() in label.lower():
+                choices.append(app_commands.Choice(name=label, value=rule["id"]))
+        return choices[:25]
+
+    @access_rule.command(
+        name="edit",
+        description="Change the permission level or allow/deny on an existing access rule",
+    )
+    @app_commands.describe(
+        rule_id="The rule to edit (select from the list)",
+        level="New permission level (leave blank to keep current)",
+        overwrite="New allow/deny direction (leave blank to keep current)",
+    )
+    @app_commands.choices(overwrite=[
+        app_commands.Choice(name="Allow", value="Allow"),
+        app_commands.Choice(name="Deny",  value="Deny"),
+    ])
+    async def ar_edit(
+        self,
+        interaction: discord.Interaction,
+        rule_id: int,
+        level: str | None = None,
+        overwrite: str | None = None,
+    ):
+        data = local_store.get_access_rules_data(interaction.guild_id)
+        rule = next((r for r in data.get("rules", []) if r["id"] == rule_id), None)
+        if rule is None:
+            await interaction.response.send_message(
+                f"Access rule **#{rule_id}** not found.", ephemeral=True
+            )
+            return
+        if level is None and overwrite is None:
+            await interaction.response.send_message(
+                "Nothing to change — provide a new `level` and/or `overwrite`.", ephemeral=True
+            )
+            return
+        if level is not None:
+            levels = local_store.get_permission_levels(interaction.guild_id)
+            if level not in levels:
+                names = ", ".join(sorted(levels.keys()))
+                await interaction.response.send_message(
+                    f"Level **{level}** not found. Available: {names}", ephemeral=True
+                )
+                return
+            rule["level"] = level
+        if overwrite is not None:
+            rule["overwrite"] = overwrite
+        local_store._save(
+            local_store._guild_dir(interaction.guild_id) / "access_rules.json", data
+        )
+        await interaction.response.send_message(
+            f"Rule **#{rule_id}** updated → level: **{rule['level']}**, "
+            f"direction: **{rule['overwrite']}**.",
+            ephemeral=True,
+        )
+
+    @ar_edit.autocomplete("rule_id")
+    async def ar_edit_ac(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[int]]:
+        return await self.ar_remove_ac(interaction, current)
+
+    @ar_edit.autocomplete("level")
+    async def ar_edit_level_ac(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._level_name_autocomplete(interaction, current)
+
+    @access_rule.command(
+        name="prune",
+        description="Remove stale rules and baselines that reference deleted roles or channels",
+    )
+    async def ar_prune(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        valid_role_ids: set[int]    = {r.id for r in guild.roles}
+        valid_channel_ids: set[int] = {c.id for c in guild.channels}
+        valid_category_ids: set[int] = {c.id for c in guild.categories}
+
+        rules_removed    = local_store.prune_access_rules(
+            interaction.guild_id, valid_role_ids, valid_channel_ids
+        )
+        baselines_removed = local_store.prune_category_baselines(
+            interaction.guild_id, valid_category_ids
+        )
+        bundle_roles_removed = local_store.prune_bundle_roles(
+            interaction.guild_id, valid_role_ids
+        )
+        eg_roles_removed = local_store.prune_exclusive_group_roles(
+            interaction.guild_id, valid_role_ids
+        )
+
+        total = rules_removed + baselines_removed + bundle_roles_removed + eg_roles_removed
+        if total == 0:
+            await interaction.followup.send(
+                "Nothing to prune — all references are valid.", ephemeral=True
+            )
+            return
+
+        lines = []
+        if rules_removed:
+            lines.append(f"• **{rules_removed}** access rule(s) removed")
+        if baselines_removed:
+            lines.append(f"• **{baselines_removed}** category baseline(s) cleared")
+        if bundle_roles_removed:
+            lines.append(f"• **{bundle_roles_removed}** bundle role entry(s) removed")
+        if eg_roles_removed:
+            lines.append(f"• **{eg_roles_removed}** exclusive group role entry(s) removed")
+
+        await interaction.followup.send(
+            f"Pruned **{total}** stale reference(s):\n" + "\n".join(lines),
+            ephemeral=True,
         )
 
     @ar_add_category.autocomplete("level")

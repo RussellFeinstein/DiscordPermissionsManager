@@ -52,8 +52,11 @@ def _guild_dir(guild_id: int) -> Path:
 
 def _load(path: Path, default: dict) -> dict:
     if path.exists():
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[local_store] WARNING: could not read {path}: {e} — using defaults")
     return copy.deepcopy(default)
 
 
@@ -288,3 +291,114 @@ def remove_access_rule(guild_id: int, rule_id: int) -> None:
         if len(data["rules"]) == before:
             raise KeyError(f"Access rule #{rule_id} not found")
         _save(_guild_dir(guild_id) / "access_rules.json", data)
+
+
+# ---------------------------------------------------------------------------
+# Prune helpers (remove stale references to deleted Discord objects)
+# ---------------------------------------------------------------------------
+
+def _prune_role_list(role_strs: list[str], valid_role_ids: set[int]) -> tuple[list[str], int]:
+    """
+    Filter a list of stored role strings (ID or legacy name).
+    Integer-ID entries that are no longer in valid_role_ids are dropped.
+    Legacy name strings are always kept (cannot validate without the Discord API).
+    Returns (kept_list, removed_count).
+    """
+    kept, removed = [], 0
+    for rs in role_strs:
+        try:
+            if int(rs) in valid_role_ids:
+                kept.append(rs)
+            else:
+                removed += 1
+        except ValueError:
+            kept.append(rs)  # legacy name — cannot validate, keep it
+    return kept, removed
+
+
+def prune_access_rules(
+    guild_id: int,
+    valid_role_ids: set[int],
+    valid_channel_ids: set[int],
+) -> int:
+    """
+    Remove access rules where any stored role ID or target ID no longer
+    exists in Discord.  Legacy non-integer entries are kept.
+    Returns the number of rules removed.
+    """
+    def _rule_valid(rule: dict) -> bool:
+        for rid in rule["role_ids"]:
+            try:
+                if int(rid) not in valid_role_ids:
+                    return False
+            except ValueError:
+                pass  # legacy string — keep
+        for tid in rule["target_ids"]:
+            try:
+                if int(tid) not in valid_channel_ids:
+                    return False
+            except ValueError:
+                pass
+        return True
+
+    with _get_lock(guild_id):
+        data = get_access_rules_data(guild_id)
+        before = len(data["rules"])
+        data["rules"] = [r for r in data["rules"] if _rule_valid(r)]
+        removed = before - len(data["rules"])
+        if removed:
+            _save(_guild_dir(guild_id) / "access_rules.json", data)
+        return removed
+
+
+def prune_category_baselines(guild_id: int, valid_category_ids: set[int]) -> int:
+    """
+    Remove baselines whose category no longer exists in Discord.
+    Returns the number of baselines removed.
+    """
+    with _get_lock(guild_id):
+        baselines = get_category_baselines(guild_id)
+        before = len(baselines)
+        kept = {k: v for k, v in baselines.items() if int(k) in valid_category_ids}
+        removed = before - len(kept)
+        if removed:
+            _save(_guild_dir(guild_id) / "category_baselines.json", kept)
+        return removed
+
+
+def prune_bundle_roles(guild_id: int, valid_role_ids: set[int]) -> int:
+    """
+    Remove deleted role IDs from all bundles.
+    Returns the total number of role entries removed.
+    """
+    with _get_lock(guild_id):
+        bundles = get_bundles(guild_id)
+        total_removed, changed = 0, False
+        for name, role_strs in bundles.items():
+            kept, count = _prune_role_list(role_strs, valid_role_ids)
+            if count:
+                bundles[name] = kept
+                total_removed += count
+                changed = True
+        if changed:
+            _save(_guild_dir(guild_id) / "bundles.json", bundles)
+        return total_removed
+
+
+def prune_exclusive_group_roles(guild_id: int, valid_role_ids: set[int]) -> int:
+    """
+    Remove deleted role IDs from all exclusive groups.
+    Returns the total number of role entries removed.
+    """
+    with _get_lock(guild_id):
+        groups = get_exclusive_groups(guild_id)
+        total_removed, changed = 0, False
+        for name, role_strs in groups.items():
+            kept, count = _prune_role_list(role_strs, valid_role_ids)
+            if count:
+                groups[name] = kept
+                total_removed += count
+                changed = True
+        if changed:
+            _save(_guild_dir(guild_id) / "exclusive_groups.json", groups)
+        return total_removed

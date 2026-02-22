@@ -42,7 +42,11 @@ class PermissionsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild = interaction.guild
-        plan = build_permission_plan(guild)
+        try:
+            plan = build_permission_plan(guild)
+        except Exception as e:
+            await interaction.followup.send(f"Failed to build permission plan: `{e}`", ephemeral=True)
+            return
 
         lines = diff_permission_plan(plan, guild)
 
@@ -73,7 +77,11 @@ class PermissionsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild = interaction.guild
-        plan = build_permission_plan(guild)
+        try:
+            plan = build_permission_plan(guild)
+        except Exception as e:
+            await interaction.followup.send(f"Failed to build permission plan: `{e}`", ephemeral=True)
+            return
 
         total = sum(len(v) for v in plan.entries.values())
         if total == 0:

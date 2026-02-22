@@ -1230,7 +1230,7 @@ class AdminCog(commands.Cog):
     async def ar_edit_ac(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[int]]:
-        return await self.ar_remove_ac(interaction, current)
+        return await self._rule_id_autocomplete(interaction, current)
 
     @ar_edit.autocomplete("level")
     async def ar_edit_level_ac(

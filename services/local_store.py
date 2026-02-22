@@ -293,6 +293,32 @@ def remove_access_rule(guild_id: int, rule_id: int) -> None:
         _save(_guild_dir(guild_id) / "access_rules.json", data)
 
 
+def update_access_rule(
+    guild_id: int,
+    rule_id: int,
+    *,
+    level: str | None = None,
+    overwrite: str | None = None,
+) -> dict:
+    """
+    Update an existing access rule in-place.
+    Only fields that are not None are modified; others are preserved.
+    Returns a copy of the updated rule.
+    Raises KeyError if the rule is not found.
+    """
+    with _get_lock(guild_id):
+        data = get_access_rules_data(guild_id)
+        rule = next((r for r in data["rules"] if r["id"] == rule_id), None)
+        if rule is None:
+            raise KeyError(f"Access rule #{rule_id} not found")
+        if level is not None:
+            rule["level"] = level
+        if overwrite is not None:
+            rule["overwrite"] = overwrite
+        _save(_guild_dir(guild_id) / "access_rules.json", data)
+        return dict(rule)
+
+
 # ---------------------------------------------------------------------------
 # Prune helpers (remove stale references to deleted Discord objects)
 # ---------------------------------------------------------------------------

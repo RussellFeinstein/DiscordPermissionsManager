@@ -23,7 +23,7 @@ Exclusive group commands  (/exclusive-group ...)
   /exclusive-group list                       — list all groups and their roles
   /exclusive-group create <name>              — create an empty group
   /exclusive-group delete <name>              — delete a group
-  /exclusive-group add-role <group> <role>    — add a role to a group
+  /exclusive-group add-role <group> <role>    — add one or more roles to a group
   /exclusive-group remove-role <group> <role> — remove a role from a group
 
 Category baseline commands  (/category ...)
@@ -725,11 +725,29 @@ class AdminCog(commands.Cog):
             content=f"Deleted exclusive group **{name}**.", view=None
         )
 
-    @exclusive_group.command(name="add-role", description="Add a Discord role to an exclusive group")
-    @app_commands.describe(name="The exclusive group", role="Role to add")
-    async def eg_add_role(self, interaction: discord.Interaction, name: str, role: discord.Role):
+    @exclusive_group.command(name="add-role", description="Add one or more Discord roles to an exclusive group")
+    @app_commands.describe(
+        name="The exclusive group",
+        role1="Role to add",
+        role2="Additional role",
+        role3="Additional role",
+        role4="Additional role",
+        role5="Additional role",
+    )
+    async def eg_add_role(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        role1: discord.Role,
+        role2: discord.Role | None = None,
+        role3: discord.Role | None = None,
+        role4: discord.Role | None = None,
+        role5: discord.Role | None = None,
+    ):
+        roles = [r for r in [role1, role2, role3, role4, role5] if r is not None]
         try:
-            local_store.add_role_to_exclusive_group(interaction.guild_id, name, str(role.id))
+            for role in roles:
+                local_store.add_role_to_exclusive_group(interaction.guild_id, name, str(role.id))
         except KeyError:
             await interaction.response.send_message(
                 f"Exclusive group **{name}** not found.", ephemeral=True
@@ -1092,13 +1110,6 @@ class AdminCog(commands.Cog):
         level: str | None = None,
         overwrite: str | None = None,
     ):
-        data = local_store.get_access_rules_data(interaction.guild_id)
-        rule = next((r for r in data.get("rules", []) if r["id"] == rule_id), None)
-        if rule is None:
-            await interaction.response.send_message(
-                f"Access rule **#{rule_id}** not found.", ephemeral=True
-            )
-            return
         if level is None and overwrite is None:
             await interaction.response.send_message(
                 "Nothing to change — provide a new `level` and/or `overwrite`.", ephemeral=True
@@ -1112,15 +1123,18 @@ class AdminCog(commands.Cog):
                     f"Level **{level}** not found. Available: {names}", ephemeral=True
                 )
                 return
-            rule["level"] = level
-        if overwrite is not None:
-            rule["overwrite"] = overwrite
-        local_store._save(
-            local_store._guild_dir(interaction.guild_id) / "access_rules.json", data
-        )
+        try:
+            updated = local_store.update_access_rule(
+                interaction.guild_id, rule_id, level=level, overwrite=overwrite
+            )
+        except KeyError:
+            await interaction.response.send_message(
+                f"Access rule **#{rule_id}** not found.", ephemeral=True
+            )
+            return
         await interaction.response.send_message(
-            f"Rule **#{rule_id}** updated → level: **{rule['level']}**, "
-            f"direction: **{rule['overwrite']}**.",
+            f"Rule **#{rule_id}** updated → level: **{updated['level']}**, "
+            f"direction: **{updated['overwrite']}**.",
             ephemeral=True,
         )
 

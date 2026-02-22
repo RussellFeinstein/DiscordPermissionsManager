@@ -57,20 +57,12 @@ class Bot(commands.Bot):
                 print(f"Cleared guild-specific commands from {cleared} server(s).")
 
     async def on_guild_join(self, guild: discord.Guild):
-        """Send a welcome message when the bot is added to a new server."""
-        channel = guild.system_channel
-        if channel is None or not channel.permissions_for(guild.me).send_messages:
-            channel = next(
-                (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
-                None,
-            )
-        if channel is None:
-            return
-
+        """Send a welcome DM to the person who invited the bot."""
         embed = discord.Embed(
             title="Thanks for adding Permissions Manager!",
             description=(
-                "Everything is managed through Discord slash commands — no external setup needed.\n\n"
+                f"You've added the bot to **{guild.name}**. "
+                "Everything is configured through Discord slash commands.\n\n"
                 "**Role management** (works right away):\n"
                 "• `/bundle create` — create a role bundle\n"
                 "• `/assign @member <bundle>` — assign a bundle to a member\n"
@@ -84,7 +76,25 @@ class Bot(commands.Bot):
             ),
             color=discord.Color.blurple(),
         )
-        await channel.send(embed=embed)
+
+        inviter = None
+        try:
+            async for entry in guild.audit_logs(
+                action=discord.AuditLogAction.bot_add, limit=5
+            ):
+                if entry.target.id == self.user.id:
+                    inviter = entry.user
+                    break
+        except discord.Forbidden:
+            pass  # No audit log access — skip
+
+        if inviter is None:
+            return
+
+        try:
+            await inviter.send(embed=embed)
+        except discord.Forbidden:
+            pass  # Inviter has DMs closed — skip silently
 
 
 bot = Bot()

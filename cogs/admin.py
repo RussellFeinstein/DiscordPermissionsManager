@@ -1455,7 +1455,7 @@ class AdminCog(commands.Cog):
             embeds.append(e)
 
         if embeds:
-            embeds[0].title = "Permissions Manager — Status"
+            embeds[0].description = "# Permissions Manager — Status\n\n" + (embeds[0].description or "")
 
         await interaction.followup.send(embeds=embeds[:10], ephemeral=True)
 

@@ -977,17 +977,18 @@ class AdminCog(commands.Cog):
                 f"Level **{level}** not found. Available: {names}", ephemeral=True
             )
             return
-        role_ids = [str(r.id) for r in roles]
-        role_label = ", ".join(f"**{r.name}**" for r in roles)
-        rule_id = local_store.add_access_rule(
-            interaction.guild_id,
-            role_ids=role_ids,
-            target_type="category",
-            target_ids=[str(category.id)],
-            level=level,
-        )
+        added = []
+        for role in roles:
+            rule_id = local_store.add_access_rule(
+                interaction.guild_id,
+                role_ids=[str(role.id)],
+                target_type="category",
+                target_ids=[str(category.id)],
+                level=level,
+            )
+            added.append(f"• **#{rule_id}** {role.name} → {category.name}")
         await interaction.response.send_message(
-            f"Rule **#{rule_id}** added: {role_label} → **{category.name}** [{level}]",
+            f"Added {len(added)} rule(s) [{level}]:\n" + "\n".join(added),
             ephemeral=True,
         )
 
@@ -1049,22 +1050,20 @@ class AdminCog(commands.Cog):
             )
             return
 
-        role_ids = [str(r.id) for r in roles]
-        role_label = ", ".join(f"**{r.name}**" for r in roles)
         added = []
-        for channel in channels:
-            rule_id = local_store.add_access_rule(
-                interaction.guild_id,
-                role_ids=role_ids,
-                target_type="channel",
-                target_ids=[str(channel.id)],
-                level=level,
-            )
-            added.append(f"• **#{rule_id}** #{channel.name}")
+        for role in roles:
+            for channel in channels:
+                rule_id = local_store.add_access_rule(
+                    interaction.guild_id,
+                    role_ids=[str(role.id)],
+                    target_type="channel",
+                    target_ids=[str(channel.id)],
+                    level=level,
+                )
+                added.append(f"• **#{rule_id}** {role.name} → #{channel.name}")
 
         await interaction.response.send_message(
-            f"Added {len(added)} rule(s) for {role_label} [{level}]:\n"
-            + "\n".join(added),
+            f"Added {len(added)} rule(s) [{level}]:\n" + "\n".join(added),
             ephemeral=True,
         )
 

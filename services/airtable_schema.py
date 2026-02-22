@@ -84,6 +84,7 @@ def create_missing(token: str, base_id: str) -> list[str]:
 
     if "Access Rules" not in table_ids:
         base.create_table("Access Rules", [
+            {"name": "ID",                 "type": "autoNumber"},
             {"name": "Roles",              "type": "multipleRecordLinks",
              "options": {"linkedTableId": table_ids["Roles"]}},
             {"name": "Channel/Category",   "type": "singleSelect",

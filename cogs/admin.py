@@ -1321,6 +1321,78 @@ class AdminCog(commands.Cog):
             ephemeral=True,
         )
 
+    @access_rule.command(
+        name="list",
+        description="List all access rules, grouped by target and sorted by server position",
+    )
+    async def ar_list(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        rules = local_store.get_access_rules_data(interaction.guild_id).get("rules", [])
+
+        if not rules:
+            await interaction.followup.send("No access rules configured yet.", ephemeral=True)
+            return
+
+        # Build buckets: target_id_str → [rule, ...]
+        cat_bucket: dict[str, list] = {}
+        ch_bucket:  dict[str, list] = {}
+        for rule in rules:
+            bucket = cat_bucket if rule["target_type"] == "category" else ch_bucket
+            for tid_str in rule["target_ids"]:
+                bucket.setdefault(tid_str, []).append(rule)
+
+        def _rule_sort(rule: dict) -> tuple:
+            role_names = [_display_role(guild, rid) for rid in rule["role_ids"]]
+            primary = role_names[0] if role_names else ""
+            return (0 if primary == "@everyone" else 1, primary.lower(), _level_sort_key(rule["level"]), rule["id"])
+
+        def _chan_pos(tid_str: str) -> tuple[int, int]:
+            ch = guild.get_channel(int(tid_str))
+            if ch is None:
+                return (99999, 99999)
+            if isinstance(ch, discord.CategoryChannel):
+                return (ch.position, 0)
+            cat_pos = ch.category.position if ch.category else -1
+            return (cat_pos, ch.position)
+
+        def _bucket_lines(bucket: dict[str, list], label: str) -> list[str]:
+            if not bucket:
+                return []
+            n_rules   = sum(len(v) for v in bucket.values())
+            n_targets = len(bucket)
+            lines = [f"**{label} — {n_rules} rule(s) / {n_targets} target(s)**"]
+            for tid_str in sorted(bucket, key=_chan_pos):
+                ch = guild.get_channel(int(tid_str))
+                name = ch.name if ch else "[deleted channel]"
+                lines.append(f"**{name}**")
+                for rule in sorted(bucket[tid_str], key=_rule_sort):
+                    role_names = [_display_role(guild, rid) for rid in rule["role_ids"]]
+                    lines.append(f"  › #{rule['id']}  {', '.join(role_names)} [{rule['level']}]")
+            return lines
+
+        cat_lines = _bucket_lines(cat_bucket, "Category Rules")
+        ch_lines  = _bucket_lines(ch_bucket,  "Channel Rules")
+
+        all_lines = cat_lines + ([""] if cat_lines and ch_lines else []) + ch_lines
+
+        # Send in chunks that fit Discord's 2000-char limit
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for line in all_lines:
+            if current_len + len(line) + 1 > 1900 and current:
+                chunks.append("\n".join(current))
+                current, current_len = [], 0
+            current.append(line)
+            current_len += len(line) + 1
+        if current:
+            chunks.append("\n".join(current))
+
+        for chunk in chunks:
+            await interaction.followup.send(chunk, ephemeral=True)
+
     # ==================================================================
     # /bot-access group
     # ==================================================================
@@ -1415,8 +1487,7 @@ class AdminCog(commands.Cog):
             cat_name = cat.name if cat else f"(deleted {cat_id_str})"
             bl_lines.append(f"• **{cat_name}** → {level}")
 
-        # --- Access Rules: grouped by target (categories, then channels) ---
-        # bucket[target_id_str] = list of rules whose target_ids contains that id
+        # --- Access Rules: counts only (use /access-rule list for full detail) ---
         cat_bucket: dict[str, list] = {}
         ch_bucket:  dict[str, list] = {}
         for rule in rules:
@@ -1424,55 +1495,13 @@ class AdminCog(commands.Cog):
             for tid_str in rule["target_ids"]:
                 bucket.setdefault(tid_str, []).append(rule)
 
-        def _target_name(tid_str: str) -> str:
-            ch = guild.get_channel(int(tid_str))
-            return ch.name if ch else "[deleted channel]"
-
-        def _rule_sort_key(rule: dict) -> tuple:
-            """Sort within a target: @everyone first, then alpha by primary role, then level, then ID."""
-            role_names = [_display_role(guild, rid) for rid in rule["role_ids"]]
-            primary = role_names[0] if role_names else ""
-            return (
-                0 if primary == "@everyone" else 1,
-                primary.lower(),
-                _level_sort_key(rule["level"]),
-                rule["id"],
-            )
-
-        def _rule_group_lines(bucket: dict[str, list]) -> list[str]:
-            """Return display lines for one bucket.
-
-            Targets sorted by server position (top-to-bottom as in Discord);
-            deleted targets sorted to the end. Blank line between groups for readability.
-            Rules within each target sorted by: @everyone first, then role name, then level.
-            """
-            lines: list[str] = []
-            def _pos(tid_str: str) -> tuple[int, int]:
-                ch = guild.get_channel(int(tid_str))
-                if ch is None:
-                    return (99999, 99999)
-                if isinstance(ch, discord.CategoryChannel):
-                    return (ch.position, 0)
-                cat_pos = ch.category.position if ch.category else -1
-                return (cat_pos, ch.position)
-            sorted_targets = sorted(bucket, key=_pos)
-            for i, tid_str in enumerate(sorted_targets):
-                if i > 0:
-                    lines.append("")  # visual gap between target groups
-                lines.append(f"**{_target_name(tid_str)}**")
-                for rule in sorted(bucket[tid_str], key=_rule_sort_key):
-                    role_names = [_display_role(guild, rid) for rid in rule["role_ids"]]
-                    lines.append(f"  › #{rule['id']}  {', '.join(role_names)} [{rule['level']}]")
-            return lines
-
-        cat_rule_lines = _rule_group_lines(cat_bucket)
-        ch_rule_lines  = _rule_group_lines(ch_bucket)
-
-        # Accurate counts: rules (total entries) vs targets (distinct channels/categories).
         n_cat_rules, n_cat_targets = sum(len(v) for v in cat_bucket.values()), len(cat_bucket)
         n_ch_rules,  n_ch_targets  = sum(len(v) for v in ch_bucket.values()),  len(ch_bucket)
 
-        _AR_HINT = "/access-rule add-category • /access-rule add-channel • /access-rule edit • /access-rule remove • /access-rule prune • /sync-permissions"
+        ar_summary_lines = [
+            f"• **{n_cat_rules}** rule(s) across **{n_cat_targets}** category target(s)",
+            f"• **{n_ch_rules}** rule(s) across **{n_ch_targets}** channel target(s)",
+        ]
 
         all_blocks: list[str] = [
             *_desc_sections(
@@ -1491,16 +1520,10 @@ class AdminCog(commands.Cog):
                 f"Category Baselines ({len(baselines)})", bl_lines,
                 hint="/category baseline-set • /category baseline-clear",
             ),
-            # Access rules: separate blocks for category and channel targets.
-            # Hint goes on the last block only.
             *_desc_sections(
-                f"Category Rules ({n_cat_rules} rules / {n_cat_targets} targets)",
-                cat_rule_lines,
-            ),
-            *_desc_sections(
-                f"Channel Rules ({n_ch_rules} rules / {n_ch_targets} targets)",
-                ch_rule_lines,
-                hint=_AR_HINT,
+                f"Access Rules ({n_cat_rules + n_ch_rules} total)",
+                ar_summary_lines,
+                hint="/access-rule list • /access-rule add-category • /access-rule add-channel • /access-rule edit • /access-rule remove • /access-rule prune • /sync-permissions",
             ),
         ]
 

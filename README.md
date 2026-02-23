@@ -211,6 +211,7 @@ Access rules grant a role a specific permission level on a category or channel, 
 
 | Command | Description |
 |---|---|
+| `/access-rule list` | Show all rules grouped by target, sorted by server position |
 | `/access-rule add-category <role> <category> <level>` | Rule targeting a whole category (up to 5 roles at once) |
 | `/access-rule add-channel <role> <channel> <level>` | Rule targeting one or more channels (up to 5 roles, 5 channels) |
 | `/access-rule edit <id> <level>` | Change the permission level on an existing rule |

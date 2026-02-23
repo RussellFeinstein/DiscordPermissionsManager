@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from services import local_store
 from services.sync import build_permission_plan, apply_permission_plan, diff_permission_plan
 
 # Max characters Discord allows in a single message
@@ -71,6 +72,21 @@ class PermissionsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Allow server administrators and any role granted bot manager access."""
+        if interaction.user.guild_permissions.administrator:
+            return True
+        manager_role_ids = local_store.get_bot_manager_roles(interaction.guild_id)
+        user_role_ids = {str(r.id) for r in interaction.user.roles}
+        if user_role_ids & set(manager_role_ids):
+            return True
+        await interaction.response.send_message(
+            "You don't have permission to use this command.\n"
+            "Ask a server administrator to grant your role bot access via `/bot-access add-role`.",
+            ephemeral=True,
+        )
+        return False
+
     # ------------------------------------------------------------------
     # /preview-permissions
     # ------------------------------------------------------------------
@@ -78,7 +94,7 @@ class PermissionsCog(commands.Cog):
         name="preview-permissions",
         description="Show what /sync-permissions would change without applying anything.",
     )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.guild_only()
     async def preview_permissions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -109,7 +125,7 @@ class PermissionsCog(commands.Cog):
         name="sync-permissions",
         description="Apply all configured permission levels and access rules to Discord.",
     )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.guild_only()
     async def sync_permissions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)

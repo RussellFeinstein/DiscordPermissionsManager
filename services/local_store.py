@@ -421,3 +421,33 @@ def prune_exclusive_group_roles(guild_id: int, valid_role_ids: set[int]) -> int:
         if changed:
             _save(_guild_dir(guild_id) / "exclusive_groups.json", groups)
         return total_removed
+
+
+# ---------------------------------------------------------------------------
+# Bot manager roles
+# ---------------------------------------------------------------------------
+
+def get_bot_manager_roles(guild_id: int) -> list[str]:
+    """Returns list of role IDs (as strings) that have bot management access."""
+    data = _load(_guild_dir(guild_id) / "bot_managers.json", {"role_ids": []})
+    return data.get("role_ids", [])
+
+
+def add_bot_manager_role(guild_id: int, role_id: str) -> None:
+    with _get_lock(guild_id):
+        data = _load(_guild_dir(guild_id) / "bot_managers.json", {"role_ids": []})
+        if role_id not in data["role_ids"]:
+            data["role_ids"].append(role_id)
+            _save(_guild_dir(guild_id) / "bot_managers.json", data)
+
+
+def remove_bot_manager_role(guild_id: int, role_id: str) -> bool:
+    """Returns True if the role was found and removed."""
+    with _get_lock(guild_id):
+        data = _load(_guild_dir(guild_id) / "bot_managers.json", {"role_ids": []})
+        before = len(data["role_ids"])
+        data["role_ids"] = [r for r in data["role_ids"] if r != role_id]
+        if len(data["role_ids"]) < before:
+            _save(_guild_dir(guild_id) / "bot_managers.json", data)
+            return True
+        return False

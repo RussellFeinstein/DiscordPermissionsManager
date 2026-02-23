@@ -356,6 +356,21 @@ class AdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Allow server administrators and any role granted bot manager access."""
+        if interaction.user.guild_permissions.administrator:
+            return True
+        manager_role_ids = local_store.get_bot_manager_roles(interaction.guild_id)
+        user_role_ids = {str(r.id) for r in interaction.user.roles}
+        if user_role_ids & set(manager_role_ids):
+            return True
+        await interaction.response.send_message(
+            "You don't have permission to use this command.\n"
+            "Ask a server administrator to grant your role bot access via `/bot-access add-role`.",
+            ephemeral=True,
+        )
+        return False
+
     # ==================================================================
     # /level group
     # ==================================================================
@@ -363,7 +378,7 @@ class AdminCog(commands.Cog):
     level = app_commands.Group(
         name="level",
         description="Manage permission levels",
-        default_permissions=discord.Permissions(administrator=True),
+        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @level.command(name="list", description="List all permission levels")
@@ -559,7 +574,7 @@ class AdminCog(commands.Cog):
     bundle = app_commands.Group(
         name="bundle",
         description="Manage role bundles",
-        default_permissions=discord.Permissions(manage_roles=True),
+        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @bundle.command(name="list", description="List all bundles and their roles")
@@ -729,7 +744,7 @@ class AdminCog(commands.Cog):
     exclusive_group = app_commands.Group(
         name="exclusive-group",
         description="Manage exclusive role groups (only one role per group can be held at a time)",
-        default_permissions=discord.Permissions(administrator=True),
+        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @exclusive_group.command(name="list", description="List all exclusive groups and their roles")
@@ -878,7 +893,7 @@ class AdminCog(commands.Cog):
     category = app_commands.Group(
         name="category",
         description="Manage per-category @everyone baseline permissions",
-        default_permissions=discord.Permissions(administrator=True),
+        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @category.command(name="baseline-list", description="List all category baseline permissions")
@@ -963,7 +978,7 @@ class AdminCog(commands.Cog):
     access_rule = app_commands.Group(
         name="access-rule",
         description="Manage role-based channel/category access rules",
-        default_permissions=discord.Permissions(administrator=True),
+        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @access_rule.command(
@@ -1307,6 +1322,58 @@ class AdminCog(commands.Cog):
         )
 
     # ==================================================================
+    # /bot-access group
+    # ==================================================================
+
+    bot_access = app_commands.Group(
+        name="bot-access",
+        description="Manage which roles can use this bot (administrator only)",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    @bot_access.command(name="list", description="List roles that have bot management access")
+    async def ba_list(self, interaction: discord.Interaction):
+        role_ids = local_store.get_bot_manager_roles(interaction.guild_id)
+        if not role_ids:
+            body = "*No roles configured — only server administrators can use this bot.*"
+        else:
+            lines = []
+            for rid in role_ids:
+                role = interaction.guild.get_role(int(rid))
+                lines.append(f"• {role.name if role else f'[deleted role]'}")
+            body = "\n".join(lines)
+        embed = discord.Embed(
+            description=f"# Bot Access — Manager Roles\n{body}",
+            color=discord.Color.blurple(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @bot_access.command(name="add-role", description="Grant a role bot management access")
+    @app_commands.describe(role="The role to grant access")
+    async def ba_add_role(self, interaction: discord.Interaction, role: discord.Role):
+        local_store.add_bot_manager_role(interaction.guild_id, str(role.id))
+        embed = discord.Embed(
+            description=f"# Bot Access — Manager Roles\n**{role.name}** can now use this bot.",
+            color=discord.Color.green(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @bot_access.command(name="remove-role", description="Revoke a role's bot management access")
+    @app_commands.describe(role="The role to revoke access from")
+    async def ba_remove_role(self, interaction: discord.Interaction, role: discord.Role):
+        found = local_store.remove_bot_manager_role(interaction.guild_id, str(role.id))
+        if not found:
+            await interaction.response.send_message(
+                f"**{role.name}** did not have bot access.", ephemeral=True
+            )
+            return
+        embed = discord.Embed(
+            description=f"# Bot Access — Manager Roles\n**{role.name}** no longer has bot access.",
+            color=discord.Color.red(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ==================================================================
     # /status
     # ==================================================================
 
@@ -1314,7 +1381,7 @@ class AdminCog(commands.Cog):
         name="status",
         description="Show all configured permission settings for this server",
     )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     async def status(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         gid   = interaction.guild_id

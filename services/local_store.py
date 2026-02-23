@@ -424,30 +424,82 @@ def prune_exclusive_group_roles(guild_id: int, valid_role_ids: set[int]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Bot manager roles
+# Bot access — scope-based
 # ---------------------------------------------------------------------------
 
-def get_bot_manager_roles(guild_id: int) -> list[str]:
-    """Returns list of role IDs (as strings) that have bot management access."""
-    data = _load(_guild_dir(guild_id) / "bot_managers.json", {"role_ids": []})
-    return data.get("role_ids", [])
+# Inline copy of ALL_SCOPES to avoid circular imports with services.access.
+_ALL_SCOPES = ["assign", "bundles", "groups", "access-rules", "levels", "sync", "status"]
 
 
-def add_bot_manager_role(guild_id: int, role_id: str) -> None:
+def _bot_access_path(guild_id: int) -> Path:
+    return _guild_dir(guild_id) / "bot_access.json"
+
+
+def _migrate_bot_managers(guild_id: int) -> dict[str, list[str]]:
+    """
+    One-time migration from the old bot_managers.json (all-or-nothing) to
+    bot_access.json (scope-based).  Existing manager roles receive all scopes.
+    Returns the migrated {role_id: [scopes]} dict (empty if no old file).
+    """
+    old_path = _guild_dir(guild_id) / "bot_managers.json"
+    if not old_path.exists():
+        return {}
+    old_data = _load(old_path, {"role_ids": []})
+    role_ids = old_data.get("role_ids", [])
+    return {rid: list(_ALL_SCOPES) for rid in role_ids} if role_ids else {}
+
+
+def get_bot_access(guild_id: int) -> dict[str, list[str]]:
+    """
+    Returns {role_id: [scope, ...]} for all roles with any bot access.
+    Performs a one-time migration from the legacy bot_managers.json if needed.
+    """
+    path = _bot_access_path(guild_id)
+    if not path.exists():
+        migrated = _migrate_bot_managers(guild_id)
+        if migrated:
+            _save(path, {"role_scopes": migrated})
+        return migrated
+    data = _load(path, {"role_scopes": {}})
+    return data.get("role_scopes", {})
+
+
+def grant_bot_scope(guild_id: int, role_id: str, scopes: list[str]) -> None:
+    """Grant one or more scopes to a role."""
     with _get_lock(guild_id):
-        data = _load(_guild_dir(guild_id) / "bot_managers.json", {"role_ids": []})
-        if role_id not in data["role_ids"]:
-            data["role_ids"].append(role_id)
-            _save(_guild_dir(guild_id) / "bot_managers.json", data)
+        path = _bot_access_path(guild_id)
+        data = _load(path, {"role_scopes": {}})
+        role_scopes = data.setdefault("role_scopes", {})
+        existing = set(role_scopes.get(role_id, []))
+        existing.update(scopes)
+        # Preserve ALL_SCOPES ordering
+        role_scopes[role_id] = [s for s in _ALL_SCOPES if s in existing]
+        _save(path, data)
 
 
-def remove_bot_manager_role(guild_id: int, role_id: str) -> bool:
-    """Returns True if the role was found and removed."""
+def revoke_bot_scope(guild_id: int, role_id: str, scopes: list[str]) -> None:
+    """Revoke one or more scopes from a role."""
     with _get_lock(guild_id):
-        data = _load(_guild_dir(guild_id) / "bot_managers.json", {"role_ids": []})
-        before = len(data["role_ids"])
-        data["role_ids"] = [r for r in data["role_ids"] if r != role_id]
-        if len(data["role_ids"]) < before:
-            _save(_guild_dir(guild_id) / "bot_managers.json", data)
-            return True
-        return False
+        path = _bot_access_path(guild_id)
+        data = _load(path, {"role_scopes": {}})
+        role_scopes = data.get("role_scopes", {})
+        if role_id in role_scopes:
+            remaining = [s for s in role_scopes[role_id] if s not in scopes]
+            if remaining:
+                role_scopes[role_id] = remaining
+            else:
+                del role_scopes[role_id]
+            _save(path, data)
+
+
+def clear_bot_role(guild_id: int, role_id: str) -> bool:
+    """Remove all scopes from a role.  Returns True if the role was found."""
+    with _get_lock(guild_id):
+        path = _bot_access_path(guild_id)
+        data = _load(path, {"role_scopes": {}})
+        role_scopes = data.get("role_scopes", {})
+        if role_id not in role_scopes:
+            return False
+        del role_scopes[role_id]
+        _save(path, data)
+        return True

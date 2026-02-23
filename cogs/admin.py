@@ -49,6 +49,7 @@ from discord.ext import commands
 
 from config import ALL_PERMISSIONS, PERMISSION_GROUPS
 from services import local_store
+from services.access import ALL_SCOPES, check_scope
 
 
 # ---------------------------------------------------------------------------
@@ -357,24 +358,7 @@ class AdminCog(commands.Cog):
         self.bot = bot
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Allow server administrators and any role granted bot manager access."""
-        if interaction.guild is None:
-            await interaction.response.send_message(
-                "This command can only be used inside a server.", ephemeral=True
-            )
-            return False
-        if interaction.user.guild_permissions.administrator:
-            return True
-        manager_role_ids = local_store.get_bot_manager_roles(interaction.guild_id)
-        user_role_ids = {str(r.id) for r in interaction.user.roles}
-        if user_role_ids & set(manager_role_ids):
-            return True
-        await interaction.response.send_message(
-            "You don't have permission to use this command.\n"
-            "Ask a server administrator to grant your role bot access via `/bot-access add-role`.",
-            ephemeral=True,
-        )
-        return False
+        return await check_scope(interaction)
 
     # ==================================================================
     # /level group
@@ -1403,48 +1387,149 @@ class AdminCog(commands.Cog):
 
     access_mgr = app_commands.Group(
         name="bot-access",
-        description="Manage which roles can use this bot (administrator only)",
+        description="Manage which roles can use bot commands (administrator only)",
         default_permissions=discord.Permissions(administrator=True),
     )
 
-    @access_mgr.command(name="list", description="List roles that have bot management access")
+    @access_mgr.command(name="list", description="Show all roles and their granted command scopes")
     async def ba_list(self, interaction: discord.Interaction):
-        role_ids = local_store.get_bot_manager_roles(interaction.guild_id)
-        if not role_ids:
+        bot_access = local_store.get_bot_access(interaction.guild_id)
+        if not bot_access:
             body = "*No roles configured — only server administrators can use this bot.*"
         else:
             lines = []
-            for rid in role_ids:
+            for rid, scopes in bot_access.items():
                 role = interaction.guild.get_role(int(rid))
-                lines.append(f"• {role.name if role else f'[deleted role]'}")
+                role_label = f"**{role.name}**" if role else f"[deleted role `{rid}`]"
+                if set(scopes) >= set(ALL_SCOPES):
+                    scope_label = "all scopes"
+                else:
+                    scope_label = ", ".join(scopes) if scopes else "*(no scopes)*"
+                lines.append(f"• {role_label} — {scope_label}")
             body = "\n".join(lines)
         embed = discord.Embed(
-            description=f"# Bot Access — Manager Roles\n{body}",
+            description=f"# Bot Access — Granted Scopes\n{body}",
             color=discord.Color.blurple(),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @access_mgr.command(name="add-role", description="Grant a role bot management access")
-    @app_commands.describe(role="The role to grant access")
-    async def ba_add_role(self, interaction: discord.Interaction, role: discord.Role):
-        local_store.add_bot_manager_role(interaction.guild_id, str(role.id))
+    @access_mgr.command(
+        name="grant",
+        description="Grant a role one or more command scopes (use 'all' for full access)",
+    )
+    @app_commands.describe(
+        role="The role to grant access to",
+        scope="Scope to grant (or 'all')",
+        scope2="Additional scope (optional)",
+        scope3="Additional scope (optional)",
+    )
+    async def ba_grant(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        scope: str,
+        scope2: str | None = None,
+        scope3: str | None = None,
+    ):
+        given = [s for s in [scope, scope2, scope3] if s]
+        if "all" in given:
+            to_grant = list(ALL_SCOPES)
+        else:
+            invalid = [s for s in given if s not in ALL_SCOPES]
+            if invalid:
+                await interaction.response.send_message(
+                    f"Unknown scope(s): {', '.join(f'`{s}`' for s in invalid)}\n"
+                    f"Valid scopes: {', '.join(f'`{s}`' for s in ALL_SCOPES)} or `all`",
+                    ephemeral=True,
+                )
+                return
+            to_grant = list(dict.fromkeys(given))  # deduplicate, preserve order
+
+        local_store.grant_bot_scope(interaction.guild_id, str(role.id), to_grant)
+        granted_label = "all scopes" if set(to_grant) >= set(ALL_SCOPES) else ", ".join(f"`{s}`" for s in to_grant)
         embed = discord.Embed(
-            description=f"# Bot Access — Manager Roles\n**{role.name}** can now use this bot.",
+            description=f"# Bot Access — Grant\n**{role.name}** granted {granted_label}.",
             color=discord.Color.green(),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @access_mgr.command(name="remove-role", description="Revoke a role's bot management access")
-    @app_commands.describe(role="The role to revoke access from")
+    @ba_grant.autocomplete("scope")
+    @ba_grant.autocomplete("scope2")
+    @ba_grant.autocomplete("scope3")
+    async def ba_grant_scope_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        choices = ["all"] + ALL_SCOPES
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in choices
+            if current.lower() in s.lower()
+        ][:25]
+
+    @access_mgr.command(
+        name="revoke",
+        description="Revoke one or more command scopes from a role",
+    )
+    @app_commands.describe(
+        role="The role to revoke access from",
+        scope="Scope to revoke (or 'all' to revoke everything)",
+        scope2="Additional scope (optional)",
+        scope3="Additional scope (optional)",
+    )
+    async def ba_revoke(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        scope: str,
+        scope2: str | None = None,
+        scope3: str | None = None,
+    ):
+        given = [s for s in [scope, scope2, scope3] if s]
+        if "all" in given:
+            to_revoke = list(ALL_SCOPES)
+        else:
+            invalid = [s for s in given if s not in ALL_SCOPES]
+            if invalid:
+                await interaction.response.send_message(
+                    f"Unknown scope(s): {', '.join(f'`{s}`' for s in invalid)}\n"
+                    f"Valid scopes: {', '.join(f'`{s}`' for s in ALL_SCOPES)} or `all`",
+                    ephemeral=True,
+                )
+                return
+            to_revoke = list(dict.fromkeys(given))
+
+        local_store.revoke_bot_scope(interaction.guild_id, str(role.id), to_revoke)
+        revoked_label = "all scopes" if set(to_revoke) >= set(ALL_SCOPES) else ", ".join(f"`{s}`" for s in to_revoke)
+        embed = discord.Embed(
+            description=f"# Bot Access — Revoke\nRevoked {revoked_label} from **{role.name}**.",
+            color=discord.Color.orange(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ba_revoke.autocomplete("scope")
+    @ba_revoke.autocomplete("scope2")
+    @ba_revoke.autocomplete("scope3")
+    async def ba_revoke_scope_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        choices = ["all"] + ALL_SCOPES
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in choices
+            if current.lower() in s.lower()
+        ][:25]
+
+    @access_mgr.command(name="remove-role", description="Remove all bot access from a role")
+    @app_commands.describe(role="The role to remove all access from")
     async def ba_remove_role(self, interaction: discord.Interaction, role: discord.Role):
-        found = local_store.remove_bot_manager_role(interaction.guild_id, str(role.id))
+        found = local_store.clear_bot_role(interaction.guild_id, str(role.id))
         if not found:
             await interaction.response.send_message(
-                f"**{role.name}** did not have bot access.", ephemeral=True
+                f"**{role.name}** did not have any bot access configured.", ephemeral=True
             )
             return
         embed = discord.Embed(
-            description=f"# Bot Access — Manager Roles\n**{role.name}** no longer has bot access.",
+            description=f"# Bot Access — Remove\n**{role.name}** no longer has any bot access.",
             color=discord.Color.red(),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)

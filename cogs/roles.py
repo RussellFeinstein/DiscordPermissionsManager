@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from services import local_store
+from services.access import check_scope
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +113,9 @@ async def _apply_bundle(
 class RolesCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await check_scope(interaction)
 
     # ------------------------------------------------------------------
     # /assign
